@@ -36,14 +36,14 @@ static void GIReadDisabledState(void) {
                 [fm fileExistsAtPath:@"/var/mobile/Library/Preferences/com.soren.glassicons.disabled"];
 }
 
-static CGFloat GIClampedDouble(CFStringRef key, CGFloat fallback) {
+static CGFloat GIClampedDouble(CFStringRef key, CGFloat fallback, CGFloat ceiling) {
     CFPropertyListRef value = CFPreferencesCopyAppValue(key, kGlassDomain);
     CGFloat result = fallback;
     if (value) {
         if (CFGetTypeID(value) == CFNumberGetTypeID()) {
             double number = fallback;
             CFNumberGetValue((CFNumberRef)value, kCFNumberDoubleType, &number);
-            result = (CGFloat)fmax(0.0, fmin(1.0, number));
+            result = (CGFloat)fmax(0.0, fmin(ceiling, number));
         }
         CFRelease(value);
     }
@@ -56,9 +56,9 @@ static void GIReadPreferences(void) {
         gEnabled = CFGetTypeID(enabled) == CFBooleanGetTypeID() ? CFBooleanGetValue((CFBooleanRef)enabled) : YES;
         CFRelease(enabled);
     }
-    gIntensity = GIClampedDouble(CFSTR("Intensity"), 0.90);
-    gRimWeight = GIClampedDouble(CFSTR("Rim"), 0.75);
-    gSheenWeight = GIClampedDouble(CFSTR("Sheen"), 0.70);
+    gIntensity = GIClampedDouble(CFSTR("Intensity"), 0.90, 5.0);
+    gRimWeight = GIClampedDouble(CFSTR("Rim"), 0.75, 1.0);
+    gSheenWeight = GIClampedDouble(CFSTR("Sheen"), 0.70, 1.0);
 }
 
 // Cheap, throttled refresh so slider changes show up without a respring.
@@ -157,12 +157,13 @@ static UIImage *GITileImage(CGSize size, CGFloat scale, CGFloat factor, NSString
     CGFloat darkScale = 0.30 + 0.70 * factor;
     // Light icons need much less white-on-white; keep dark icons vivid.
     CGFloat lightDamp = factor > 0.8 ? 0.55 : 1.0;
-    CGFloat sheenTop = 0.42 * gSheenWeight * darkScale * gIntensity * lightDamp;
+    CGFloat sheenTop = 0.40 * gSheenWeight * darkScale * gIntensity * lightDamp;
     CGFloat sheenMid = 0.10 * gSheenWeight * darkScale * gIntensity * lightDamp;
-    CGFloat sheenBottom = 0.0;
-    CGFloat rimTop = 0.95 * gRimWeight * darkScale * gIntensity;
-    CGFloat rimMid = 0.45 * gRimWeight * darkScale * gIntensity;
-    CGFloat rimBottom = 0.10 * gRimWeight * darkScale * gIntensity;
+    CGFloat sheenBottom = 0.06 * gSheenWeight * darkScale * gIntensity * lightDamp;
+    // Rim is symmetric now: full ring visible top and bottom.
+    CGFloat rimTop = 0.85 * gRimWeight * darkScale * gIntensity;
+    CGFloat rimMid = 0.70 * gRimWeight * darkScale * gIntensity;
+    CGFloat rimBottom = 0.85 * gRimWeight * darkScale * gIntensity;
 
     UIImage *image = nil;
     @try {
@@ -182,7 +183,7 @@ static UIImage *GITileImage(CGSize size, CGFloat scale, CGFloat factor, NSString
             CGFloat comps[] = {1.0, 1.0, 1.0, sheenTop,
                                1.0, 1.0, 1.0, sheenMid,
                                0.62, 0.88, 1.0, sheenBottom};
-            CGFloat locs[] = {0.0, 0.22, 0.55};
+            CGFloat locs[] = {0.0, 0.28, 1.0};
             CGGradientRef grad = CGGradientCreateWithColorComponents(space, comps, locs, 3);
             CGContextDrawLinearGradient(c, grad, CGPointMake(0.0, 0.0), CGPointMake(0.0, size.height), 0);
             CGGradientRelease(grad);
@@ -203,7 +204,7 @@ static UIImage *GITileImage(CGSize size, CGFloat scale, CGFloat factor, NSString
             CGFloat comps2[] = {1.0, 1.0, 1.0, rimTop,
                                 1.0, 1.0, 1.0, rimMid,
                                 1.0, 1.0, 1.0, rimBottom};
-            CGFloat locs2[] = {0.0, 0.58, 1.0};
+            CGFloat locs2[] = {0.0, 0.5, 1.0};
             CGGradientRef grad2 = CGGradientCreateWithColorComponents(space2, comps2, locs2, 3);
             CGContextDrawLinearGradient(c, grad2, CGPointMake(0.0, 0.0), CGPointMake(0.0, size.height), 0);
             CGGradientRelease(grad2);

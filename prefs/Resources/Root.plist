@@ -32,7 +32,7 @@
 			<key>label</key>
 			<string>整体强度（总开关倍率，建议 0.6–0.9）</string>
 			<key>footerText</key>
-			<string>所有效果的总倍率。拉到 0 等于临时关闭。</string>
+			<string>所有效果的总倍率。0 等于临时关闭，超过 1 会过曝，可到 5 做夸张效果。</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -46,11 +46,13 @@
 			<key>min</key>
 			<real>0.0</real>
 			<key>max</key>
-			<real>1.0</real>
+			<real>5.0</real>
 			<key>isContinuous</key>
 			<true/>
 			<key>showValue</key>
 			<true/>
+			<key>height</key>
+			<real>56.0</real>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -77,6 +79,8 @@
 			<true/>
 			<key>showValue</key>
 			<true/>
+			<key>height</key>
+			<real>56.0</real>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -103,6 +107,8 @@
 			<true/>
 			<key>showValue</key>
 			<true/>
+			<key>height</key>
+			<real>56.0</real>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -110,7 +116,7 @@
 			<key>label</key>
 			<string>关于</string>
 			<key>footerText</key>
-			<string>GlassIcons 0.7.0 · 作者 Ning。调整立即生效，无需注销。紧急停用：创建 /var/mobile/Library/local.glassicons.disabled 后 respring。</string>
+			<string>GlassIcons&#10;作者: Ning&#10;调整后回到桌面立即生效，无需注销。</string>
 		</dict>
 	</array>
 </dict>
