@@ -12,7 +12,7 @@
 			<key>label</key>
 			<string>玻璃图标</string>
 			<key>footerText</key>
-			<string>给桌面图标叠加玻璃高光与描边。文件夹与小预览自动跳过，深色图标自动减弱。</string>
+			<string>给桌面图标叠加玻璃高光与描边。深色图标自动减弱；已打开的文件夹内部不叠加。</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -30,13 +30,17 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>label</key>
-			<string>整体强度（总开关倍率，建议 0.6–0.9）</string>
+			<string>整体强度（总开关倍率）</string>
 			<key>footerText</key>
 			<string>所有效果的总倍率。0 等于临时关闭，超过 1 会过曝，可到 5 做夸张效果。</string>
 		</dict>
 		<dict>
 			<key>cell</key>
 			<string>PSSliderCell</string>
+			<key>cellClass</key>
+			<string>GISliderCell</string>
+			<key>height</key>
+			<real>56.0</real>
 			<key>defaults</key>
 			<string>com.soren.glassicons</string>
 			<key>key</key>
@@ -50,9 +54,7 @@
 			<key>isContinuous</key>
 			<true/>
 			<key>showValue</key>
-			<true/>
-			<key>height</key>
-			<real>56.0</real>
+			<false/>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -65,6 +67,10 @@
 		<dict>
 			<key>cell</key>
 			<string>PSSliderCell</string>
+			<key>cellClass</key>
+			<string>GISliderCell</string>
+			<key>height</key>
+			<real>56.0</real>
 			<key>defaults</key>
 			<string>com.soren.glassicons</string>
 			<key>key</key>
@@ -74,13 +80,11 @@
 			<key>min</key>
 			<real>0.0</real>
 			<key>max</key>
-			<real>1.0</real>
+			<real>5.0</real>
 			<key>isContinuous</key>
 			<true/>
 			<key>showValue</key>
-			<true/>
-			<key>height</key>
-			<real>56.0</real>
+			<false/>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -93,6 +97,10 @@
 		<dict>
 			<key>cell</key>
 			<string>PSSliderCell</string>
+			<key>cellClass</key>
+			<string>GISliderCell</string>
+			<key>height</key>
+			<real>56.0</real>
 			<key>defaults</key>
 			<string>com.soren.glassicons</string>
 			<key>key</key>
@@ -102,13 +110,11 @@
 			<key>min</key>
 			<real>0.0</real>
 			<key>max</key>
-			<real>1.0</real>
+			<real>5.0</real>
 			<key>isContinuous</key>
 			<true/>
 			<key>showValue</key>
-			<true/>
-			<key>height</key>
-			<real>56.0</real>
+			<false/>
 		</dict>
 		<dict>
 			<key>cell</key>

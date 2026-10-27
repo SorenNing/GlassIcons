@@ -1,7 +1,7 @@
 include $(THEOS)/makefiles/common.mk
 
 BUNDLE_NAME = GlassIconsPrefs
-GlassIconsPrefs_FILES = RootListController.m
+GlassIconsPrefs_FILES = RootListController.m GISliderCell.m
 GlassIconsPrefs_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -I.
 GlassIconsPrefs_FRAMEWORKS = UIKit Foundation
 GlassIconsPrefs_PRIVATE_FRAMEWORKS = Preferences

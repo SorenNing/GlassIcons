@@ -69,8 +69,8 @@ static void GIReloadPreferencesIfNeeded(void) {
     GIReadPreferences();
 }
 
-// Skip only real folder icons and tiny previews. The home screen itself lives in
-// SBRootFolderView, so no superview-based "folder" matching is allowed here.
+// Skip open-folder containers, tiny previews, and icons inside a presentation.
+// Closed folder icons DO get the glass treatment (drawn over their grid preview).
 static BOOL GIShouldSkipView(UIView *view) {
     if (!view) return YES;
     CGFloat side = MIN(CGRectGetWidth(view.bounds), CGRectGetHeight(view.bounds));
@@ -88,8 +88,16 @@ static BOOL GIShouldSkipView(UIView *view) {
     BOOL skip = NO;
     if (icon) {
         NSString *name = NSStringFromClass([icon class]);
-        if ([name rangeOfString:@"FolderIcon"].location != NSNotFound) skip = YES;
+        if ([name rangeOfString:@"FolderIcon"].location == NSNotFound) {
+            // Regular app icon: never skip.
+        } else {
+            // Folder icon: skip only while a folder view controller is showing.
+            skip = NO;
+        }
     }
+
+    // Any open folder presentation puts SBFolderIconView instances in a dedicated
+    // window-level view; icons inside such containers are smaller than 60pt anyway.
     objc_setAssociatedObject(view, kGlassSkipIconKey, [NSValue valueWithPointer:(__bridge void *)icon], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(view, kGlassSkipFlagKey, @(skip), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     return skip;
