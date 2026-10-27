@@ -1,0 +1,11 @@
+Package: com.soren.glassicons
+Name: GlassIcons
+Version: 0.1.0
+Architecture: iphoneos-arm64e
+Description: Subtle glass rim and sheen for SpringBoard app icons (iOS 15-17, RootHide)
+Maintainer: SorenNing
+Author: SorenNing
+Section: Tweaks
+Priority: optional
+Depends: firmware (>= 15.0), firmware (<< 18.0), mobilesubstrate
+Tag: pw::application
