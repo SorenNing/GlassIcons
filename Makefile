@@ -11,7 +11,7 @@ GlassIcons_FRAMEWORKS = UIKit Foundation CoreFoundation QuartzCore CoreGraphics
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 
-after-install::
+after-stage::
 	install -d "$(THEOS_STAGING_DIR)/Library/PreferenceBundles/GlassIconsPrefs.bundle"
 	install -m 644 prefs/Info.plist prefs/Root.plist "$(THEOS_STAGING_DIR)/Library/PreferenceBundles/GlassIconsPrefs.bundle/"
 	install -d "$(THEOS_STAGING_DIR)/Library/PreferenceLoader/Preferences"
