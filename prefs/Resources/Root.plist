@@ -30,37 +30,17 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>label</key>
-			<string>外观</string>
+			<string>整体强度（总开关倍率，建议 0.6–0.9）</string>
+			<key>footerText</key>
+			<string>所有效果的总倍率。拉到 0 等于临时关闭。</string>
 		</dict>
 		<dict>
 			<key>cell</key>
 			<string>PSSliderCell</string>
-			<key>label</key>
-			<string>整体强度</string>
 			<key>defaults</key>
 			<string>com.soren.glassicons</string>
 			<key>key</key>
 			<string>Intensity</string>
-			<key>default</key>
-			<real>0.9</real>
-			<key>min</key>
-			<real>0.0</real>
-			<key>max</key>
-			<real>1.0</real>
-			<key>isContinuous</key>
-			<true/>
-			<key>showValue</key>
-			<true/>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSSliderCell</string>
-			<key>label</key>
-			<string>高光强度</string>
-			<key>defaults</key>
-			<string>com.soren.glassicons</string>
-			<key>key</key>
-			<string>Sheen</string>
 			<key>default</key>
 			<real>0.7</real>
 			<key>min</key>
@@ -74,15 +54,47 @@
 		</dict>
 		<dict>
 			<key>cell</key>
-			<string>PSSliderCell</string>
+			<string>PSGroupCell</string>
 			<key>label</key>
-			<string>描边强度</string>
+			<string>高光强度（图标顶部的柔光）</string>
+			<key>footerText</key>
+			<string>过高会让浅色图标顶部发白，建议 0.4–0.7。</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSliderCell</string>
+			<key>defaults</key>
+			<string>com.soren.glassicons</string>
+			<key>key</key>
+			<string>Sheen</string>
+			<key>default</key>
+			<real>0.6</real>
+			<key>min</key>
+			<real>0.0</real>
+			<key>max</key>
+			<real>1.0</real>
+			<key>isContinuous</key>
+			<true/>
+			<key>showValue</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>描边强度（边缘亮线）</string>
+			<key>footerText</key>
+			<string>图标轮廓的细亮线，建议 0.5–0.8。</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSliderCell</string>
 			<key>defaults</key>
 			<string>com.soren.glassicons</string>
 			<key>key</key>
 			<string>Rim</string>
 			<key>default</key>
-			<real>0.75</real>
+			<real>0.7</real>
 			<key>min</key>
 			<real>0.0</real>
 			<key>max</key>
@@ -98,7 +110,7 @@
 			<key>label</key>
 			<string>关于</string>
 			<key>footerText</key>
-			<string>GlassIcons 0.6.0 · 作者 Ning。调整后回桌面滑动一下即可生效。紧急停用：创建 /var/mobile/Library/local.glassicons.disabled 后 respring。</string>
+			<string>GlassIcons 0.7.0 · 作者 Ning。调整立即生效，无需注销。紧急停用：创建 /var/mobile/Library/local.glassicons.disabled 后 respring。</string>
 		</dict>
 	</array>
 </dict>

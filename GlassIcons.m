@@ -26,6 +26,7 @@ static BOOL gDisabled = NO;
 static NSUInteger gInstallAttempts = 0;
 static CFTimeInterval gLastPrefsRead = 0.0;
 static NSMutableDictionary<NSString *, UIImage *> *gTileCache = nil;
+static NSHashTable<UIView *> *gTrackedViews = nil;
 
 static BOOL GIIsDisabled(void) { return gDisabled; }
 
@@ -154,12 +155,14 @@ static UIImage *GITileImage(CGSize size, CGFloat scale, CGFloat factor, NSString
     if (gTileCache.count > 32) [gTileCache removeAllObjects];
 
     CGFloat darkScale = 0.30 + 0.70 * factor;
-    CGFloat sheenTop = 0.34 * gSheenWeight * darkScale * gIntensity;
-    CGFloat sheenMid = 0.085 * gSheenWeight * darkScale * gIntensity;
-    CGFloat sheenBottom = 0.12 * gSheenWeight * darkScale * gIntensity;
-    CGFloat rimTop = 1.00 * gRimWeight * darkScale * gIntensity;
-    CGFloat rimMid = 0.55 * gRimWeight * darkScale * gIntensity;
-    CGFloat rimBottom = 0.12 * gRimWeight * darkScale * gIntensity;
+    // Light icons need much less white-on-white; keep dark icons vivid.
+    CGFloat lightDamp = factor > 0.8 ? 0.55 : 1.0;
+    CGFloat sheenTop = 0.42 * gSheenWeight * darkScale * gIntensity * lightDamp;
+    CGFloat sheenMid = 0.10 * gSheenWeight * darkScale * gIntensity * lightDamp;
+    CGFloat sheenBottom = 0.0;
+    CGFloat rimTop = 0.95 * gRimWeight * darkScale * gIntensity;
+    CGFloat rimMid = 0.45 * gRimWeight * darkScale * gIntensity;
+    CGFloat rimBottom = 0.10 * gRimWeight * darkScale * gIntensity;
 
     UIImage *image = nil;
     @try {
@@ -179,7 +182,7 @@ static UIImage *GITileImage(CGSize size, CGFloat scale, CGFloat factor, NSString
             CGFloat comps[] = {1.0, 1.0, 1.0, sheenTop,
                                1.0, 1.0, 1.0, sheenMid,
                                0.62, 0.88, 1.0, sheenBottom};
-            CGFloat locs[] = {0.0, 0.34, 1.0};
+            CGFloat locs[] = {0.0, 0.22, 0.55};
             CGGradientRef grad = CGGradientCreateWithColorComponents(space, comps, locs, 3);
             CGContextDrawLinearGradient(c, grad, CGPointMake(0.0, 0.0), CGPointMake(0.0, size.height), 0);
             CGGradientRelease(grad);
@@ -253,6 +256,8 @@ static void GIUpdateOverlay(UIView *view) {
         overlay.contentsGravity = kCAGravityResize;
         objc_setAssociatedObject(view, kGlassOverlayKey, overlay, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [view.layer addSublayer:overlay];
+        if (!gTrackedViews) gTrackedViews = [NSHashTable weakObjectsHashTable];
+        [gTrackedViews addObject:view];
     }
 
     [CATransaction begin];
@@ -309,10 +314,23 @@ static void GIInstallHook(void) {
     gInstalling = NO;
 }
 
-static void GIPreferencesChanged(CFNotificationCenterRef center, void *observer, CFStringRef name,
-                                 const void *object, CFDictionaryRef userInfo) {
+static void GIPreferencesChanged(CFNotificationCenterRef center __unused, void *observer __unused, CFStringRef name __unused,
+                                 const void *object __unused, CFDictionaryRef userInfo __unused) {
     gLastPrefsRead = 0.0;  // force a fresh read on the next icon layout
+
+    // Redraw every tracked icon right away so slider changes apply without respring.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        GIReadPreferences();
+        if (!gTileCache) gTileCache = [NSMutableDictionary dictionary];
+        [gTileCache removeAllObjects];
+        for (UIView *view in gTrackedViews) {
+            if (!view) continue;
+            objc_setAssociatedObject(view, kGlassSignatureKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            @try { GIUpdateOverlay(view); } @catch (__unused NSException *e) {}
+        }
+    });
 }
+
 
 __attribute__((constructor)) static void GIInitialize(void) {
     if (![NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.springboard"]) return;
