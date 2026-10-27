@@ -2,29 +2,29 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>title</key>
+	<string>GlassIcons</string>
 	<key>items</key>
 	<array>
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
-			<key>footerText</key>
-			<string>给桌面图标叠加玻璃高光与描边。文件夹与小预览自动跳过。</string>
 			<key>label</key>
 			<string>玻璃图标</string>
+			<key>footerText</key>
+			<string>给桌面图标叠加玻璃高光与描边。文件夹与小预览自动跳过，深色图标自动减弱。</string>
 		</dict>
 		<dict>
-			<key>PostNotification</key>
-			<string>com.soren.glassicons.changed</string>
 			<key>cell</key>
 			<string>PSSwitchCell</string>
-			<key>default</key>
-			<true/>
+			<key>label</key>
+			<string>启用</string>
 			<key>defaults</key>
 			<string>com.soren.glassicons</string>
 			<key>key</key>
 			<string>Enabled</string>
-			<key>label</key>
-			<string>启用</string>
+			<key>default</key>
+			<true/>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -33,79 +33,73 @@
 			<string>外观</string>
 		</dict>
 		<dict>
-			<key>PostNotification</key>
-			<string>com.soren.glassicons.changed</string>
 			<key>cell</key>
 			<string>PSSliderCell</string>
-			<key>default</key>
-			<real>0.9</real>
-			<key>defaults</key>
-			<string>com.soren.glassicons</string>
-			<key>isContinuous</key>
-			<true/>
-			<key>key</key>
-			<string>Intensity</string>
 			<key>label</key>
 			<string>整体强度</string>
-			<key>max</key>
-			<real>1.0</real>
+			<key>defaults</key>
+			<string>com.soren.glassicons</string>
+			<key>key</key>
+			<string>Intensity</string>
+			<key>default</key>
+			<real>0.9</real>
 			<key>min</key>
 			<real>0.0</real>
+			<key>max</key>
+			<real>1.0</real>
+			<key>isContinuous</key>
+			<true/>
 			<key>showValue</key>
 			<true/>
 		</dict>
 		<dict>
-			<key>PostNotification</key>
-			<string>com.soren.glassicons.changed</string>
 			<key>cell</key>
 			<string>PSSliderCell</string>
-			<key>default</key>
-			<real>0.7</real>
-			<key>defaults</key>
-			<string>com.soren.glassicons</string>
-			<key>isContinuous</key>
-			<true/>
-			<key>key</key>
-			<string>Sheen</string>
 			<key>label</key>
 			<string>高光强度</string>
-			<key>max</key>
-			<real>1.0</real>
+			<key>defaults</key>
+			<string>com.soren.glassicons</string>
+			<key>key</key>
+			<string>Sheen</string>
+			<key>default</key>
+			<real>0.7</real>
 			<key>min</key>
 			<real>0.0</real>
+			<key>max</key>
+			<real>1.0</real>
+			<key>isContinuous</key>
+			<true/>
 			<key>showValue</key>
 			<true/>
 		</dict>
 		<dict>
-			<key>PostNotification</key>
-			<string>com.soren.glassicons.changed</string>
 			<key>cell</key>
 			<string>PSSliderCell</string>
-			<key>default</key>
-			<real>0.75</real>
-			<key>defaults</key>
-			<string>com.soren.glassicons</string>
-			<key>isContinuous</key>
-			<true/>
-			<key>key</key>
-			<string>Rim</string>
 			<key>label</key>
 			<string>描边强度</string>
-			<key>max</key>
-			<real>1.0</real>
+			<key>defaults</key>
+			<string>com.soren.glassicons</string>
+			<key>key</key>
+			<string>Rim</string>
+			<key>default</key>
+			<real>0.75</real>
 			<key>min</key>
 			<real>0.0</real>
+			<key>max</key>
+			<real>1.0</real>
+			<key>isContinuous</key>
+			<true/>
 			<key>showValue</key>
 			<true/>
 		</dict>
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>关于</string>
 			<key>footerText</key>
-			<string>深色图标会自动减弱高光。紧急停用：创建 /var/mobile/Library/local.glassicons.disabled 后 respring。</string>
+			<string>GlassIcons 0.6.0 · 作者 Ning。调整后回桌面滑动一下即可生效。紧急停用：创建 /var/mobile/Library/local.glassicons.disabled 后 respring。</string>
 		</dict>
 	</array>
-	<key>title</key>
-	<string>GlassIcons</string>
 </dict>
 </plist>
