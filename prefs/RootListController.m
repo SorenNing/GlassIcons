@@ -1,39 +1,7 @@
 #import <UIKit/UIKit.h>
-#import <Foundation/Foundation.h>
 #import <CoreFoundation/CoreFoundation.h>
-#import <objc/runtime.h>
 
 #define kGlassDomain CFSTR("com.soren.glassicons")
-
-typedef NS_ENUM(NSInteger, PSGlassCellType) {
-    PSGlassGroupCell = 0,
-    PSGlassLinkCell = 1,
-    PSGlassSliderCell = 5,
-    PSGlassSwitchCell = 6
-};
-
-@interface PSSpecifier : NSObject
-+ (instancetype)preferenceSpecifierNamed:(NSString *)name
-                                  target:(id)target
-                                     set:(SEL)set
-                                     get:(SEL)get
-                                  detail:(Class)detail
-                                    cell:(NSInteger)cell
-                                    edit:(Class)edit;
-- (void)setProperty:(id)value forKey:(NSString *)key;
-- (id)propertyForKey:(NSString *)key;
-@end
-
-@interface PSListController : UIViewController
-- (NSArray *)specifiers;
-- (void)reloadSpecifiers;
-- (void)loadSpecifiersFromPlistName:(NSString *)name target:(id)target;
-@end
-
-@interface GlassIconsRootListController : PSListController
-@end
-
-static BOOL gApplyingSpecifiers = NO;
 
 static void GILog(NSString *format, ...) {
     va_list args;
@@ -54,152 +22,145 @@ static void GILog(NSString *format, ...) {
     } @catch (__unused NSException *e) {}
 }
 
+static NSString * const kKeys[] = {@"Intensity", @"Sheen", @"Rim"};
+static NSString * const kNames[] = {@"整体强度", @"高光强度", @"描边强度"};
+static double const kDefaults[] = {0.90, 0.70, 0.75};
+
+@interface GlassIconsRootListController : UITableViewController
+@end
+
 @implementation GlassIconsRootListController
 
-+ (void)load {
-    GILog(@"bundle loaded: %@", [[NSBundle bundleForClass:self] bundlePath]);
-}
-
-- (id)init {
-    self = [super init];
-    if (self) {
-        self.title = @"GlassIcons";
-        GILog(@"init ok, class=%@", NSStringFromClass([self class]));
-    }
+- (instancetype)init {
+    self = [super initWithStyle:UITableViewStyleInsetGrouped];
     return self;
 }
 
-- (NSString *)title {
-    return @"GlassIcons";
+- (instancetype)initWithNibName:(NSString *)nibNameOrNil bundle:(NSBundle *)nibBundleOrNil {
+    self = [super initWithStyle:UITableViewStyleInsetGrouped];
+    return self;
 }
 
-- (id)glassReadValue:(PSSpecifier *)specifier {
-    NSString *key = [specifier propertyForKey:@"key"];
-    id fallback = [specifier propertyForKey:@"default"];
-    if (!key) return fallback ?: @(0);
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"GlassIcons";
+    self.tableView.rowHeight = UITableViewAutomaticDimension;
+    self.tableView.estimatedRowHeight = 60.0;
+    [self.tableView registerClass:[UITableViewCell class] forCellReuseIdentifier:@"cell"];
+    GILog(@"custom table ready (no PSListController pipeline)");
+}
+
+- (double)currentValueForKey:(NSString *)key fallback:(double)fallback {
     CFPropertyListRef value = CFPreferencesCopyAppValue((__bridge CFStringRef)key, kGlassDomain);
-    id result = value ? (__bridge_transfer id)value : nil;
-    return result ?: (fallback ?: @(0));
+    double result = fallback;
+    if (value) {
+        if (CFGetTypeID(value) == CFNumberGetTypeID()) {
+            double number = fallback;
+            CFNumberGetValue((CFNumberRef)value, kCFNumberDoubleType, &number);
+            result = number;
+        }
+        CFRelease(value);
+    }
+    return result;
 }
 
-- (void)glassWriteValue:(id)value specifier:(PSSpecifier *)specifier {
-    NSString *key = [specifier propertyForKey:@"key"];
-    if (!key) return;
+- (BOOL)currentEnabled {
+    CFPropertyListRef value = CFPreferencesCopyAppValue(CFSTR("Enabled"), kGlassDomain);
+    BOOL result = YES;
+    if (value) {
+        if (CFGetTypeID(value) == CFBooleanGetTypeID()) {
+            result = CFBooleanGetValue((CFBooleanRef)value);
+        }
+        CFRelease(value);
+    }
+    return result;
+}
+
+- (void)writeValue:(id)value forKey:(NSString *)key {
     CFPreferencesSetAppValue((__bridge CFStringRef)key, (__bridge CFPropertyListRef)value, kGlassDomain);
     CFPreferencesAppSynchronize(kGlassDomain);
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
                                          CFSTR("com.soren.glassicons.changed"), NULL, NULL, true);
 }
 
-- (PSSpecifier *)glassSpecifier:(NSString *)label cell:(NSInteger)cell key:(NSString *)key value:(id)value {
-    PSSpecifier *specifier = nil;
-    if (cell == PSGlassGroupCell) {
-        specifier = [PSSpecifier preferenceSpecifierNamed:label target:self set:NULL get:NULL
-                                                   detail:nil cell:PSGlassGroupCell edit:nil];
-    } else {
-        specifier = [PSSpecifier preferenceSpecifierNamed:label target:self
-                                                      set:@selector(glassWriteValue:specifier:)
-                                                      get:@selector(glassReadValue:)
-                                                   detail:nil cell:cell edit:nil];
-        [specifier setProperty:key forKey:@"key"];
-        [specifier setProperty:value forKey:@"default"];
-    }
-    return specifier;
+#pragma mark - Table data
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
+    return 2;
 }
 
-- (NSArray *)glassCodeSpecifiers {
-    NSMutableArray *list = [NSMutableArray array];
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return section == 0 ? 1 : 3;
+}
 
-    NSString *bundlePath = [[NSBundle bundleForClass:[self class]] bundlePath];
-    NSString *rootPath = [bundlePath stringByAppendingPathComponent:@"Root.plist"];
-    BOOL rootExists = [[NSFileManager defaultManager] fileExistsAtPath:rootPath];
+- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
+    return section == 0 ? @"玻璃图标" : @"外观";
+}
 
-    PSSpecifier *diagnostic = [self glassSpecifier:@"诊断" cell:PSGlassGroupCell key:nil value:nil];
-    [diagnostic setProperty:[NSString stringWithFormat:@"bundle=%@ · Root.plist=%@", bundlePath.lastPathComponent,
-                                                      rootExists ? @"存在" : @"缺失"]
-                     forKey:@"footerText"];
-    [list addObject:diagnostic];
+- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
+    if (section == 0) {
+        return @"给桌面图标叠加玻璃高光与描边。文件夹与小预览自动跳过，深色图标自动减弱。";
+    }
+    return @"调整后立即生效（回桌面滑动一下即可刷新）。紧急停用：创建 /var/mobile/Library/local.glassicons.disabled 后 respring。";
+}
 
-    [list addObject:[self glassSpecifier:@"启用" cell:PSGlassSwitchCell key:@"Enabled" value:@YES]];
-    [list addObject:[self glassSpecifier:@"外观" cell:PSGlassGroupCell key:nil value:nil]];
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"cell" forIndexPath:indexPath];
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
 
-    NSArray *sliders = @[@[@"整体强度", @"Intensity", @0.90],
-                         @[@"高光强度", @"Sheen", @0.70],
-                         @[@"描边强度", @"Rim", @0.75]];
-    for (NSArray *parts in sliders) {
-        PSSpecifier *slider = [self glassSpecifier:parts[0] cell:PSGlassSliderCell key:parts[1] value:parts[2]];
-        [slider setProperty:@0.0 forKey:@"min"];
-        [slider setProperty:@1.0 forKey:@"max"];
-        [slider setProperty:@YES forKey:@"showValue"];
-        [slider setProperty:@YES forKey:@"isContinuous"];
-        [list addObject:slider];
+    if (indexPath.section == 0) {
+        cell.textLabel.text = @"启用";
+        UISwitch *toggle = [[UISwitch alloc] init];
+        toggle.on = [self currentEnabled];
+        [toggle addTarget:self action:@selector(toggleChanged:) forControlEvents:UIControlEventValueChanged];
+        cell.accessoryView = toggle;
+        cell.detailTextLabel.text = nil;
+        return cell;
     }
 
-    PSSpecifier *footer = [self glassSpecifier:@"" cell:PSGlassGroupCell key:nil value:nil];
-    [footer setProperty:@"深色图标会自动减弱高光。紧急停用：创建 /var/mobile/Library/local.glassicons.disabled 后 respring。"
-                forKey:@"footerText"];
-    [list addObject:footer];
-    return list;
+    NSInteger index = indexPath.row;
+    cell.textLabel.text = kNames[index];
+
+    CGFloat value = (CGFloat)[self currentValueForKey:kKeys[index] fallback:kDefaults[index]];
+    UILabel *valueLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 44, 20)];
+    valueLabel.font = [UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightRegular];
+    valueLabel.textColor = UIColor.secondaryLabelColor;
+    valueLabel.textAlignment = NSTextAlignmentRight;
+    valueLabel.text = [NSString stringWithFormat:@"%.0f%%", value * 100.0];
+
+    UISlider *slider = [[UISlider alloc] initWithFrame:CGRectMake(0, 0, 150, 30)];
+    slider.minimumValue = 0.0;
+    slider.maximumValue = 1.0;
+    slider.value = value;
+    slider.tag = index;
+    [slider addTarget:self action:@selector(sliderChanged:) forControlEvents:UIControlEventValueChanged];
+
+    UIView *accessory = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 206, 32)];
+    valueLabel.frame = CGRectMake(0, 6, 44, 20);
+    slider.frame = CGRectMake(52, 1, 150, 30);
+    [accessory addSubview:valueLabel];
+    [accessory addSubview:slider];
+    cell.accessoryView = accessory;
+    cell.detailTextLabel.text = nil;
+    return cell;
 }
 
-- (NSArray *)glassResolvedSpecifiers {
-    NSArray *list = nil;
-    @try { list = [super specifiers]; } @catch (__unused NSException *e) {}
-    if (list.count > 0) return list;
+#pragma mark - Actions
 
-    @try { [self loadSpecifiersFromPlistName:@"Root" target:self]; } @catch (__unused NSException *e) {}
-    @try { list = [super specifiers]; } @catch (__unused NSException *e) {}
-    if (list.count > 0) return list;
-
-    return [self glassCodeSpecifiers];
+- (void)toggleChanged:(UISwitch *)toggle {
+    [self writeValue:@(toggle.on) forKey:@"Enabled"];
+    GILog(@"Enabled -> %@", toggle.on ? @"YES" : @"NO");
 }
 
-- (NSArray *)specifiers {
-    if (gApplyingSpecifiers) {
-        NSArray *current = nil;
-        @try { current = [super specifiers]; } @catch (__unused NSException *e) {}
-        return current ?: @[];
-    }
-    return [self glassResolvedSpecifiers];
-}
+- (void)sliderChanged:(UISlider *)slider {
+    NSInteger index = slider.tag;
+    double value = slider.value;
+    [self writeValue:@(value) forKey:kKeys[index]];
 
-// iOS 17 drives the table straight from PSListController's internal specifier
-// array, so overriding -specifiers alone is not enough: write the ivar by KVC.
-- (void)glassApplySpecifiers {
-    if (gApplyingSpecifiers) return;
-    gApplyingSpecifiers = YES;
-
-    NSArray *list = [self glassResolvedSpecifiers];
-    BOOL didSet = NO;
-    @try {
-        [self setValue:list forKey:@"specifiers"];
-        didSet = YES;
-    } @catch (NSException *e) {
-        GILog(@"KVC set specifiers failed: %@", e);
-    }
-
-    NSArray *stored = nil;
-    @try { stored = [self valueForKey:@"specifiers"]; } @catch (__unused NSException *e) {}
-    GILog(@"apply: built=%lu kvc=%d stored=%lu", (unsigned long)list.count, didSet, (unsigned long)stored.count);
-
-    gApplyingSpecifiers = NO;
-
-    @try { [self reloadSpecifiers]; } @catch (NSException *e) { GILog(@"reloadSpecifiers exception: %@", e); }
-
-    NSArray *after = nil;
-    @try { after = [self valueForKey:@"specifiers"]; } @catch (__unused NSException *e) {}
-    GILog(@"apply done: stored=%lu", (unsigned long)after.count);
-}
-
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    self.title = @"GlassIcons";
-    [self glassApplySpecifiers];
-}
-
-- (void)viewWillAppear:(BOOL)animated {
-    [super viewWillAppear:animated];
-    [self glassApplySpecifiers];
+    UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:[NSIndexPath indexPathForRow:index inSection:1]];
+    UIView *accessory = cell.accessoryView;
+    UILabel *label = accessory.subviews.firstObject;
+    label.text = [NSString stringWithFormat:@"%.0f%%", value * 100.0];
 }
 
 @end
