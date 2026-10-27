@@ -309,9 +309,18 @@ static void GIInstallHook(void) {
     gInstalling = NO;
 }
 
+static void GIPreferencesChanged(CFNotificationCenterRef center, void *observer, CFStringRef name,
+                                 const void *object, CFDictionaryRef userInfo) {
+    gLastPrefsRead = 0.0;  // force a fresh read on the next icon layout
+}
+
 __attribute__((constructor)) static void GIInitialize(void) {
     if (![NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.springboard"]) return;
     GIReadPreferences();
     GIReadDisabledState();
     GIInstallHook();
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,
+                                   (CFNotificationCallback)GIPreferencesChanged,
+                                   CFSTR("com.soren.glassicons.changed"), NULL,
+                                   CFNotificationSuspensionBehaviorDeliverImmediately);
 }

@@ -6,10 +6,18 @@
 	<dict>
 		<key>bundle</key>
 		<string>GlassIconsPrefs</string>
+		<key>detail</key>
+		<string>GlassIconsRootListController</string>
+		<key>defaults</key>
+		<string>com.soren.glassicons</string>
 		<key>cell</key>
 		<string>PSLinkCell</string>
+		<key>isController</key>
+		<true/>
 		<key>label</key>
 		<string>GlassIcons</string>
+		<key>icon</key>
+		<string>icon</string>
 	</dict>
 </dict>
 </plist>
