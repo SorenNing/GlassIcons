@@ -97,7 +97,7 @@ typedef NS_ENUM(NSInteger, PSGlassCellType) {
     return specifier;
 }
 
-- (NSArray *)specifiers {
+- (NSArray *)glassFallbackSpecifiers {
     static NSArray *cachedSpecifiers = nil;
     if (cachedSpecifiers) return cachedSpecifiers;
 
@@ -113,6 +113,13 @@ typedef NS_ENUM(NSInteger, PSGlassCellType) {
                                        footer:@"深色图标会自动减弱高光。紧急停用：创建 /var/mobile/Library/local.glassicons.disabled 后 respring。"]];
     cachedSpecifiers = list;
     return cachedSpecifiers;
+}
+
+- (NSArray *)specifiers {
+    NSArray *list = nil;
+    @try { list = [super specifiers]; } @catch (__unused NSException *e) { list = nil; }
+    if (list.count > 0) return list;
+    return [self glassFallbackSpecifiers];
 }
 
 @end
