@@ -17,7 +17,7 @@
 		<key>label</key>
 		<string>GlassIcons</string>
 		<key>icon</key>
-		<string>icon</string>
+		<string>icon.png</string>
 	</dict>
 </dict>
 </plist>
