@@ -39,10 +39,11 @@ typedef NS_ENUM(NSInteger, PSGlassCellType) {
 
 - (id)glassReadValue:(PSSpecifier *)specifier {
     NSString *key = [specifier propertyForKey:@"key"];
-    if (!key) return @(0);
+    id fallback = [specifier propertyForKey:@"default"];
+    if (!key) return fallback ?: @(0);
     CFPropertyListRef value = CFPreferencesCopyAppValue((__bridge CFStringRef)key, kGlassDomain);
     id result = value ? (__bridge_transfer id)value : nil;
-    return result ?: @(0);
+    return result ?: (fallback ?: @(0));
 }
 
 - (void)glassWriteValue:(id)value specifier:(PSSpecifier *)specifier {
@@ -97,8 +98,8 @@ typedef NS_ENUM(NSInteger, PSGlassCellType) {
 }
 
 - (NSArray *)specifiers {
-    NSArray *cached = [super specifiers];
-    if (cached && cached.count > 0) return cached;
+    static NSArray *cachedSpecifiers = nil;
+    if (cachedSpecifiers) return cachedSpecifiers;
 
     NSMutableArray *list = [NSMutableArray array];
     [list addObject:[self glassGroupWithLabel:@"玻璃图标"
@@ -110,7 +111,8 @@ typedef NS_ENUM(NSInteger, PSGlassCellType) {
     [list addObject:[self glassSliderWithLabel:@"描边强度" key:@"Rim" defaultValue:0.75]];
     [list addObject:[self glassGroupWithLabel:@""
                                        footer:@"深色图标会自动减弱高光。紧急停用：创建 /var/mobile/Library/local.glassicons.disabled 后 respring。"]];
-    return list;
+    cachedSpecifiers = list;
+    return cachedSpecifiers;
 }
 
 @end
