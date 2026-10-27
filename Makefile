@@ -17,3 +17,6 @@ include $(THEOS_MAKE_PATH)/aggregate.mk
 after-stage::
 	install -d "$(THEOS_STAGING_DIR)/Library/PreferenceLoader/Preferences"
 	install -m 644 prefs/GlassIcons.plist "$(THEOS_STAGING_DIR)/Library/PreferenceLoader/Preferences/GlassIcons.plist"
+	@if command -v ldid >/dev/null 2>&1; then \
+		ldid -S -Cadhoc "$(THEOS_STAGING_DIR)/Library/PreferenceBundles/GlassIconsPrefs.bundle/GlassIconsPrefs" && echo "signed prefs bundle"; \
+	fi
