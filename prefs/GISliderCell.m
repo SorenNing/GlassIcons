@@ -24,8 +24,16 @@
 }
 
 - (UISlider *)glassSlider {
-    for (UIView *view in self.contentView.subviews) {
-        if ([view isKindOfClass:UISlider.class]) return (UISlider *)view;
+    // Search the whole view hierarchy (PSSliderTableCell may nest the slider).
+    NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:self.contentView];
+    if (self.superview) [queue addObject:self];
+    while (queue.count) {
+        UIView *node = queue.firstObject;
+        [queue removeObjectAtIndex:0];
+        for (UIView *child in node.subviews) {
+            if ([child isKindOfClass:UISlider.class]) return (UISlider *)child;
+            [queue addObject:child];
+        }
     }
     return nil;
 }
@@ -63,13 +71,18 @@
 
 - (void)layoutSubviews {
     [super layoutSubviews];
+    // PSSliderTableCell places its own UISlider; find it anywhere in the hierarchy.
+    UISlider *slider = [self glassSlider];
     CGFloat width = self.contentView.bounds.size.width;
     CGFloat valueWidth = 96.0;
     CGFloat midY = self.contentView.bounds.size.height * 0.5;
 
-    UISlider *slider = [self glassSlider];
     if (slider) {
-        slider.frame = CGRectMake(16.0, midY - 15.5, width - valueWidth - 56.0, 31.0);
+        CGRect frame = slider.frame;
+        frame.origin.x = 16.0;
+        frame.size.width = width - valueWidth - 56.0;
+        frame.origin.y = midY - frame.size.height * 0.5;
+        slider.frame = frame;
         [self glassWireSlider];
     }
     _valueLabel.frame = CGRectMake(width - valueWidth - 16.0, midY - 10.0, valueWidth, 20.0);
