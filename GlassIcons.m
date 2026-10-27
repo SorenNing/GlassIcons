@@ -69,38 +69,13 @@ static void GIReloadPreferencesIfNeeded(void) {
     GIReadPreferences();
 }
 
-// Skip open-folder containers, tiny previews, and icons inside a presentation.
-// Closed folder icons DO get the glass treatment (drawn over their grid preview).
+// Nothing is skipped for folder-ness: closed folder icons, open folder
+// containers and their inner previews all get the glass overlay. Only tiny
+// (<40pt) views are ignored to avoid noise on sub-views.
 static BOOL GIShouldSkipView(UIView *view) {
     if (!view) return YES;
     CGFloat side = MIN(CGRectGetWidth(view.bounds), CGRectGetHeight(view.bounds));
-    if (side < 40.0) return YES;
-
-    id icon = nil;
-    @try { icon = [view valueForKey:@"icon"]; } @catch (__unused NSException *e) { icon = nil; }
-
-    NSValue *cachedIcon = objc_getAssociatedObject(view, kGlassSkipIconKey);
-    NSNumber *cachedFlag = objc_getAssociatedObject(view, kGlassSkipFlagKey);
-    if (cachedIcon && cachedFlag && cachedIcon.pointerValue == (__bridge void *)icon) {
-        return cachedFlag.boolValue;
-    }
-
-    BOOL skip = NO;
-    if (icon) {
-        NSString *name = NSStringFromClass([icon class]);
-        if ([name rangeOfString:@"FolderIcon"].location == NSNotFound) {
-            // Regular app icon: never skip.
-        } else {
-            // Folder icon: skip only while a folder view controller is showing.
-            skip = NO;
-        }
-    }
-
-    // Any open folder presentation puts SBFolderIconView instances in a dedicated
-    // window-level view; icons inside such containers are smaller than 60pt anyway.
-    objc_setAssociatedObject(view, kGlassSkipIconKey, [NSValue valueWithPointer:(__bridge void *)icon], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(view, kGlassSkipFlagKey, @(skip), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    return skip;
+    return side < 40.0;
 }
 
 static CGImageRef GIFindIconImage(UIView *view) {
