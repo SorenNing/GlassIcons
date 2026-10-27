@@ -15,6 +15,28 @@ static BOOL gInstalling = NO;
 static BOOL gDisabled = NO;
 static NSUInteger gInstallAttempts = 0;
 
+// Skip folder icons, icons inside a folder presentation, and tiny preview icons.
+static BOOL GIShouldSkipView(UIView *view) {
+    if (!view) return YES;
+    CGFloat side = MIN(CGRectGetWidth(view.bounds), CGRectGetHeight(view.bounds));
+    if (side < 40.0) return YES;
+
+    @try {
+        id icon = [view valueForKey:@"icon"];
+        if (icon) {
+            NSString *name = NSStringFromClass([icon class]);
+            if ([name rangeOfString:@"Folder"].location != NSNotFound) return YES;
+        }
+    } @catch (__unused NSException *e) {}
+
+    UIView *parent = view.superview;
+    for (int depth = 0; depth < 6 && parent; depth++, parent = parent.superview) {
+        NSString *name = NSStringFromClass([parent class]);
+        if ([name rangeOfString:@"Folder"].location != NSNotFound) return YES;
+    }
+    return NO;
+}
+
 static BOOL GIIsDisabled(void) { return gDisabled; }
 
 static void GIReadDisabledState(void) {
@@ -78,7 +100,7 @@ static CALayer *GICreateOverlay(UIView *view) {
 static void GIUpdateOverlay(UIView *view) {
     if (!view || !view.layer || CGRectIsEmpty(view.bounds)) return;
     CALayer *overlay = objc_getAssociatedObject(view, kGlassOverlayKey);
-    if (!gEnabled || GIIsDisabled() || gIntensity <= 0.001) {
+    if (!gEnabled || GIIsDisabled() || gIntensity <= 0.001 || GIShouldSkipView(view)) {
         [overlay removeFromSuperlayer];
         objc_setAssociatedObject(view, kGlassOverlayKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         return;
