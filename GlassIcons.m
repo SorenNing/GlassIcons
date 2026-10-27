@@ -11,15 +11,20 @@ static const void *kGlassImageKey = &kGlassImageKey;
 static const void *kGlassFactorKey = &kGlassFactorKey;
 static const void *kGlassSkipIconKey = &kGlassSkipIconKey;
 static const void *kGlassSkipFlagKey = &kGlassSkipFlagKey;
-static const void *kGlassBucketKey = &kGlassBucketKey;
+static const void *kGlassSignatureKey = &kGlassSignatureKey;
+
+static CFStringRef const kGlassDomain = CFSTR("com.soren.glassicons");
 
 static IMP gOriginalLayoutSubviews = NULL;
 static BOOL gEnabled = YES;
-static CGFloat gIntensity = 0.68;
+static CGFloat gIntensity = 0.90;
+static CGFloat gRimWeight = 0.75;
+static CGFloat gSheenWeight = 0.70;
 static BOOL gHookInstalled = NO;
 static BOOL gInstalling = NO;
 static BOOL gDisabled = NO;
 static NSUInteger gInstallAttempts = 0;
+static CFTimeInterval gLastPrefsRead = 0.0;
 static NSMutableDictionary<NSString *, UIImage *> *gTileCache = nil;
 
 static BOOL GIIsDisabled(void) { return gDisabled; }
@@ -30,21 +35,37 @@ static void GIReadDisabledState(void) {
                 [fm fileExistsAtPath:@"/var/mobile/Library/Preferences/com.soren.glassicons.disabled"];
 }
 
+static CGFloat GIClampedDouble(CFStringRef key, CGFloat fallback) {
+    CFPropertyListRef value = CFPreferencesCopyAppValue(key, kGlassDomain);
+    CGFloat result = fallback;
+    if (value) {
+        if (CFGetTypeID(value) == CFNumberGetTypeID()) {
+            double number = fallback;
+            CFNumberGetValue((CFNumberRef)value, kCFNumberDoubleType, &number);
+            result = (CGFloat)fmax(0.0, fmin(1.0, number));
+        }
+        CFRelease(value);
+    }
+    return result;
+}
+
 static void GIReadPreferences(void) {
-    CFPropertyListRef enabled = CFPreferencesCopyAppValue(CFSTR("Enabled"), CFSTR("com.soren.glassicons"));
+    CFPropertyListRef enabled = CFPreferencesCopyAppValue(CFSTR("Enabled"), kGlassDomain);
     if (enabled) {
         gEnabled = CFGetTypeID(enabled) == CFBooleanGetTypeID() ? CFBooleanGetValue((CFBooleanRef)enabled) : YES;
         CFRelease(enabled);
     }
-    CFPropertyListRef intensity = CFPreferencesCopyAppValue(CFSTR("Intensity"), CFSTR("com.soren.glassicons"));
-    if (intensity) {
-        if (CFGetTypeID(intensity) == CFNumberGetTypeID()) {
-            double value = 0.68;
-            CFNumberGetValue((CFNumberRef)intensity, kCFNumberDoubleType, &value);
-            gIntensity = (CGFloat)fmax(0.0, fmin(1.0, value));
-        }
-        CFRelease(intensity);
-    }
+    gIntensity = GIClampedDouble(CFSTR("Intensity"), 0.90);
+    gRimWeight = GIClampedDouble(CFSTR("Rim"), 0.75);
+    gSheenWeight = GIClampedDouble(CFSTR("Sheen"), 0.70);
+}
+
+// Cheap, throttled refresh so slider changes show up without a respring.
+static void GIReloadPreferencesIfNeeded(void) {
+    CFTimeInterval now = CACurrentMediaTime();
+    if (now - gLastPrefsRead < 2.5) return;
+    gLastPrefsRead = now;
+    GIReadPreferences();
 }
 
 // Skip only real folder icons and tiny previews. The home screen itself lives in
@@ -116,14 +137,29 @@ static CGFloat GIStrengthForView(UIView *view) {
     return factor;
 }
 
-static UIImage *GITileImage(CGSize size, CGFloat scale, CGFloat factor) {
+static NSString *GISettingsSignature(CGFloat factor) {
+    NSInteger factorBucket = (NSInteger)lroundf((float)(factor * 10.0));
+    NSInteger intensityBucket = (NSInteger)lroundf((float)(gIntensity * 20.0));
+    NSInteger rimBucket = (NSInteger)lroundf((float)(gRimWeight * 20.0));
+    NSInteger sheenBucket = (NSInteger)lroundf((float)(gSheenWeight * 20.0));
+    return [NSString stringWithFormat:@"%ld.%ld.%ld.%ld", (long)factorBucket, (long)intensityBucket,
+                                      (long)rimBucket, (long)sheenBucket];
+}
+
+static UIImage *GITileImage(CGSize size, CGFloat scale, CGFloat factor, NSString *signature) {
     if (!gTileCache) gTileCache = [NSMutableDictionary dictionary];
-    NSInteger bucket = (NSInteger)lroundf((float)(factor * 10.0));
-    CGFloat intensityBucket = roundf((float)(gIntensity * 20.0)) / 20.0;
-    NSString *key = [NSString stringWithFormat:@"%.1fx%.1f@%.0f#%ld#%.2f", size.width, size.height, scale, (long)bucket, intensityBucket];
+    NSString *key = [NSString stringWithFormat:@"%@|%.1fx%.1f@%.0f", signature, size.width, size.height, scale];
     UIImage *cached = gTileCache[key];
     if (cached) return cached;
     if (gTileCache.count > 32) [gTileCache removeAllObjects];
+
+    CGFloat darkScale = 0.30 + 0.70 * factor;
+    CGFloat sheenTop = 0.34 * gSheenWeight * darkScale * gIntensity;
+    CGFloat sheenMid = 0.085 * gSheenWeight * darkScale * gIntensity;
+    CGFloat sheenBottom = 0.12 * gSheenWeight * darkScale * gIntensity;
+    CGFloat rimTop = 1.00 * gRimWeight * darkScale * gIntensity;
+    CGFloat rimMid = 0.55 * gRimWeight * darkScale * gIntensity;
+    CGFloat rimBottom = 0.12 * gRimWeight * darkScale * gIntensity;
 
     UIImage *image = nil;
     @try {
@@ -136,11 +172,6 @@ static UIImage *GITileImage(CGSize size, CGFloat scale, CGFloat factor) {
             CGRect rect = CGRectMake(0, 0, size.width, size.height);
             CGFloat radius = MIN(size.width, size.height) * 0.225;
             UIBezierPath *shape = [UIBezierPath bezierPathWithRoundedRect:rect cornerRadius:radius];
-
-            CGFloat darkScale = 0.30 + 0.70 * factor;
-            CGFloat sheenTop = 0.24 * gIntensity * darkScale;
-            CGFloat sheenMid = 0.05 * gIntensity * darkScale;
-            CGFloat sheenBottom = 0.075 * gIntensity * darkScale;
 
             CGContextSaveGState(c);
             [shape addClip];
@@ -155,12 +186,10 @@ static UIImage *GITileImage(CGSize size, CGFloat scale, CGFloat factor) {
             CGColorSpaceRelease(space);
             CGContextRestoreGState(c);
 
-            CGFloat lineWidth = MAX(0.7, MIN(1.2, size.width * 0.0075));
+            CGFloat lineWidth = MAX(0.9, MIN(1.6, size.width * 0.0095));
             CGRect strokeRect = CGRectInset(rect, lineWidth * 0.5, lineWidth * 0.5);
             UIBezierPath *stroke = [UIBezierPath bezierPathWithRoundedRect:strokeRect
                                                                   cornerRadius:MAX(0.0, radius - lineWidth * 0.5)];
-            CGFloat rimTop = 0.80 * gIntensity * darkScale;
-            CGFloat rimMid = 0.26 * gIntensity * darkScale;
 
             CGContextSaveGState(c);
             CGContextAddPath(c, stroke.CGPath);
@@ -170,8 +199,8 @@ static UIImage *GITileImage(CGSize size, CGFloat scale, CGFloat factor) {
             CGColorSpaceRef space2 = CGColorSpaceCreateDeviceRGB();
             CGFloat comps2[] = {1.0, 1.0, 1.0, rimTop,
                                 1.0, 1.0, 1.0, rimMid,
-                                1.0, 1.0, 1.0, 0.0};
-            CGFloat locs2[] = {0.0, 0.55, 1.0};
+                                1.0, 1.0, 1.0, rimBottom};
+            CGFloat locs2[] = {0.0, 0.58, 1.0};
             CGGradientRef grad2 = CGGradientCreateWithColorComponents(space2, comps2, locs2, 3);
             CGContextDrawLinearGradient(c, grad2, CGPointMake(0.0, 0.0), CGPointMake(0.0, size.height), 0);
             CGGradientRelease(grad2);
@@ -189,29 +218,32 @@ static UIImage *GITileImage(CGSize size, CGFloat scale, CGFloat factor) {
 static void GIUpdateOverlay(UIView *view) {
     if (!view || !view.layer || CGRectIsEmpty(view.bounds)) return;
 
+    GIReloadPreferencesIfNeeded();
+
     CALayer *overlay = objc_getAssociatedObject(view, kGlassOverlayKey);
     if (!gEnabled || GIIsDisabled() || gIntensity <= 0.001 || GIShouldSkipView(view)) {
         if (overlay) {
             [overlay removeFromSuperlayer];
             objc_setAssociatedObject(view, kGlassOverlayKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(view, kGlassSignatureKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
         return;
     }
 
     CGRect bounds = view.bounds;
     CGFloat factor = GIStrengthForView(view);
-    NSInteger bucket = (NSInteger)lroundf((float)(factor * 10.0));
+    NSString *signature = GISettingsSignature(factor);
+    NSString *lastSignature = objc_getAssociatedObject(view, kGlassSignatureKey);
 
-    NSNumber *lastBucket = objc_getAssociatedObject(view, kGlassBucketKey);
     if (overlay &&
         CGRectEqualToRect(overlay.frame, bounds) &&
-        lastBucket && lastBucket.integerValue == bucket) {
+        [lastSignature isEqualToString:signature]) {
         return;  // nothing changed: no layout work at all
     }
 
     CGFloat scale = view.window ? view.window.screen.scale : UIScreen.mainScreen.scale;
     if (scale <= 0.0) scale = UIScreen.mainScreen.scale;
-    UIImage *tile = GITileImage(bounds.size, scale, factor);
+    UIImage *tile = GITileImage(bounds.size, scale, factor, signature);
     if (!tile) return;
 
     if (!overlay) {
@@ -230,7 +262,7 @@ static void GIUpdateOverlay(UIView *view) {
     overlay.frame = bounds;
     [CATransaction commit];
 
-    objc_setAssociatedObject(view, kGlassBucketKey, @(bucket), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(view, kGlassSignatureKey, signature, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 static void GIHookedLayoutSubviews(UIView *self, SEL _cmd) {
