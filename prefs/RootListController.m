@@ -2,7 +2,6 @@
 #import <Foundation/Foundation.h>
 #import <CoreFoundation/CoreFoundation.h>
 #import <objc/runtime.h>
-#import <unistd.h>
 
 #define kGlassDomain CFSTR("com.soren.glassicons")
 
@@ -31,6 +30,11 @@ typedef NS_ENUM(NSInteger, PSGlassCellType) {
 - (void)loadSpecifiersFromPlistName:(NSString *)name target:(id)target;
 @end
 
+@interface GlassIconsRootListController : PSListController
+@end
+
+static BOOL gApplyingSpecifiers = NO;
+
 static void GILog(NSString *format, ...) {
     va_list args;
     va_start(args, format);
@@ -50,11 +54,6 @@ static void GILog(NSString *format, ...) {
     } @catch (__unused NSException *e) {}
 }
 
-@interface GlassIconsRootListController : PSListController
-@end
-
-static BOOL gLoadingSpecifiers = NO;
-
 @implementation GlassIconsRootListController
 
 + (void)load {
@@ -72,20 +71,6 @@ static BOOL gLoadingSpecifiers = NO;
 
 - (NSString *)title {
     return @"GlassIcons";
-}
-
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    self.title = @"GlassIcons";
-    if (!gLoadingSpecifiers) {
-        gLoadingSpecifiers = YES;
-        @try { [self loadSpecifiersFromPlistName:@"Root" target:self]; }
-        @catch (NSException *e) { GILog(@"viewDidLoad load exception: %@", e); }
-        gLoadingSpecifiers = NO;
-    }
-    NSArray *loaded = nil;
-    @try { loaded = [super specifiers]; } @catch (__unused NSException *e) {}
-    GILog(@"viewDidLoad done, loaded=%lu", (unsigned long)loaded.count);
 }
 
 - (id)glassReadValue:(PSSpecifier *)specifier {
@@ -122,33 +107,27 @@ static BOOL gLoadingSpecifiers = NO;
     return specifier;
 }
 
-- (NSArray *)glassFallbackSpecifiers {
+- (NSArray *)glassCodeSpecifiers {
     NSMutableArray *list = [NSMutableArray array];
 
     NSString *bundlePath = [[NSBundle bundleForClass:[self class]] bundlePath];
     NSString *rootPath = [bundlePath stringByAppendingPathComponent:@"Root.plist"];
-    NSArray *plistSpecifiers = [NSArray arrayWithContentsOfFile:rootPath];
-    if (!plistSpecifiers) plistSpecifiers = [NSDictionary dictionaryWithContentsOfFile:rootPath][@"specifiers"];
-    NSString *diagnostic = [NSString stringWithFormat:
-        @"无法加载 Root.plist，已启用代码兜底。\nbundle=%@\nRoot.plist=%@（%lu 项）\nclass=%@",
-        bundlePath.lastPathComponent,
-        [[NSFileManager defaultManager] fileExistsAtPath:rootPath] ? @"存在" : @"缺失",
-        (unsigned long)plistSpecifiers.count,
-        NSStringFromClass([self class])];
+    BOOL rootExists = [[NSFileManager defaultManager] fileExistsAtPath:rootPath];
 
-    PSSpecifier *group = [self glassSpecifier:@"诊断" cell:PSGlassGroupCell key:nil value:nil];
-    [group setProperty:diagnostic forKey:@"footerText"];
-    [list addObject:group];
+    PSSpecifier *diagnostic = [self glassSpecifier:@"诊断" cell:PSGlassGroupCell key:nil value:nil];
+    [diagnostic setProperty:[NSString stringWithFormat:@"bundle=%@ · Root.plist=%@", bundlePath.lastPathComponent,
+                                                      rootExists ? @"存在" : @"缺失"]
+                     forKey:@"footerText"];
+    [list addObject:diagnostic];
 
     [list addObject:[self glassSpecifier:@"启用" cell:PSGlassSwitchCell key:@"Enabled" value:@YES]];
+    [list addObject:[self glassSpecifier:@"外观" cell:PSGlassGroupCell key:nil value:nil]];
 
-    PSSpecifier *appearance = [self glassSpecifier:@"外观" cell:PSGlassGroupCell key:nil value:nil];
-    [list addObject:appearance];
-
-    for (NSString *labelKey in @[@"整体强度|Intensity|0.90", @"高光强度|Sheen|0.70", @"描边强度|Rim|0.75"]) {
-        NSArray *parts = [labelKey componentsSeparatedByString:@"|"];
-        PSSpecifier *slider = [self glassSpecifier:parts[0] cell:PSGlassSliderCell key:parts[1]
-                                             value:@([parts[2] doubleValue])];
+    NSArray *sliders = @[@[@"整体强度", @"Intensity", @0.90],
+                         @[@"高光强度", @"Sheen", @0.70],
+                         @[@"描边强度", @"Rim", @0.75]];
+    for (NSArray *parts in sliders) {
+        PSSpecifier *slider = [self glassSpecifier:parts[0] cell:PSGlassSliderCell key:parts[1] value:parts[2]];
         [slider setProperty:@0.0 forKey:@"min"];
         [slider setProperty:@1.0 forKey:@"max"];
         [slider setProperty:@YES forKey:@"showValue"];
@@ -157,35 +136,70 @@ static BOOL gLoadingSpecifiers = NO;
     }
 
     PSSpecifier *footer = [self glassSpecifier:@"" cell:PSGlassGroupCell key:nil value:nil];
-    [footer setProperty:@"深色图标会自动减弱高光。" forKey:@"footerText"];
+    [footer setProperty:@"深色图标会自动减弱高光。紧急停用：创建 /var/mobile/Library/local.glassicons.disabled 后 respring。"
+                forKey:@"footerText"];
     [list addObject:footer];
-
     return list;
 }
 
+- (NSArray *)glassResolvedSpecifiers {
+    NSArray *list = nil;
+    @try { list = [super specifiers]; } @catch (__unused NSException *e) {}
+    if (list.count > 0) return list;
+
+    @try { [self loadSpecifiersFromPlistName:@"Root" target:self]; } @catch (__unused NSException *e) {}
+    @try { list = [super specifiers]; } @catch (__unused NSException *e) {}
+    if (list.count > 0) return list;
+
+    return [self glassCodeSpecifiers];
+}
+
 - (NSArray *)specifiers {
-    if (gLoadingSpecifiers) {
+    if (gApplyingSpecifiers) {
         NSArray *current = nil;
         @try { current = [super specifiers]; } @catch (__unused NSException *e) {}
         return current ?: @[];
     }
+    return [self glassResolvedSpecifiers];
+}
 
-    NSArray *list = nil;
-    @try { list = [super specifiers]; } @catch (NSException *e) { GILog(@"super specifiers exception: %@", e); }
-    GILog(@"specifiers: super count=%lu", (unsigned long)list.count);
+// iOS 17 drives the table straight from PSListController's internal specifier
+// array, so overriding -specifiers alone is not enough: write the ivar by KVC.
+- (void)glassApplySpecifiers {
+    if (gApplyingSpecifiers) return;
+    gApplyingSpecifiers = YES;
 
-    if (list.count == 0) {
-        gLoadingSpecifiers = YES;
-        @try { [self loadSpecifiersFromPlistName:@"Root" target:self]; }
-        @catch (NSException *e) { GILog(@"loadSpecifiersFromPlistName exception: %@", e); }
-        gLoadingSpecifiers = NO;
-        @try { list = [super specifiers]; } @catch (NSException *e) { GILog(@"reload specifiers exception: %@", e); }
-        GILog(@"specifiers: after explicit load count=%lu", (unsigned long)list.count);
+    NSArray *list = [self glassResolvedSpecifiers];
+    BOOL didSet = NO;
+    @try {
+        [self setValue:list forKey:@"specifiers"];
+        didSet = YES;
+    } @catch (NSException *e) {
+        GILog(@"KVC set specifiers failed: %@", e);
     }
 
-    if (list.count > 0) return list;
-    GILog(@"specifiers: falling back to code-built list");
-    return [self glassFallbackSpecifiers];
+    NSArray *stored = nil;
+    @try { stored = [self valueForKey:@"specifiers"]; } @catch (__unused NSException *e) {}
+    GILog(@"apply: built=%lu kvc=%d stored=%lu", (unsigned long)list.count, didSet, (unsigned long)stored.count);
+
+    gApplyingSpecifiers = NO;
+
+    @try { [self reloadSpecifiers]; } @catch (NSException *e) { GILog(@"reloadSpecifiers exception: %@", e); }
+
+    NSArray *after = nil;
+    @try { after = [self valueForKey:@"specifiers"]; } @catch (__unused NSException *e) {}
+    GILog(@"apply done: stored=%lu", (unsigned long)after.count);
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"GlassIcons";
+    [self glassApplySpecifiers];
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [self glassApplySpecifiers];
 }
 
 @end
