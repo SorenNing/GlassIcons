@@ -31,6 +31,10 @@ static BOOL gBadgeEnabled = YES;
 static CGFloat gBadgeIntensity = 0.90;
 static CGFloat gBadgeSheen = 0.75;
 static CGFloat gBadgeRim = 0.80;
+static CGFloat gBadgeBlur = 4.0;        // backdrop blur radius (refraction softness)
+static CGFloat gBadgeSaturation = 2.4;  // backdrop saturation boost
+static CGFloat gBadgeTint = 0.03;       // adaptive tint alpha
+static CGFloat gBadgeRefract = 1.0;     // bottom refraction band strength
 static BOOL gBadgeBlurAvailable = YES;
 static CFTimeInterval gBadgeLastPrefs = 0.0;
 
@@ -78,15 +82,23 @@ static void GIBadgeReadPrefs(void) {
     gBadgeIntensity = GIBadgeNumber(CFSTR("BadgeIntensity"), 0.90);
     gBadgeSheen = GIBadgeNumber(CFSTR("BadgeSheen"), 0.75);
     gBadgeRim = GIBadgeNumber(CFSTR("BadgeRim"), 0.80);
+    gBadgeBlur = fmax(0.0, fmin(20.0, GIBadgeNumber(CFSTR("BadgeBlur"), 4.0)));
+    gBadgeSaturation = fmax(0.0, fmin(4.0, GIBadgeNumber(CFSTR("BadgeSaturation"), 2.4)));
+    gBadgeTint = fmax(0.0, fmin(1.0, GIBadgeNumber(CFSTR("BadgeTint"), 0.03)));
+    gBadgeRefract = GIBadgeNumber(CFSTR("BadgeRefract"), 1.0);
 }
 
 static NSString *GIBadgeSignature(CGSize size, CGFloat scale) {
     NSInteger i = (NSInteger)lroundf((float)(gBadgeIntensity * 20.0));
     NSInteger s = (NSInteger)lroundf((float)(gBadgeSheen * 20.0));
     NSInteger r = (NSInteger)lroundf((float)(gBadgeRim * 20.0));
-    return [NSString stringWithFormat:@"%ld.%ld.%ld.%d|%.0fx%.0f@%.0f",
-            (long)i, (long)s, (long)r, gBadgeBlurAvailable ? 1 : 0,
-            size.width, size.height, scale];
+    NSInteger b = (NSInteger)lroundf((float)(gBadgeBlur * 2.0));
+    NSInteger sat = (NSInteger)lroundf((float)(gBadgeSaturation * 5.0));
+    NSInteger t = (NSInteger)lroundf((float)(gBadgeTint * 50.0));
+    NSInteger rf = (NSInteger)lroundf((float)(gBadgeRefract * 20.0));
+    return [NSString stringWithFormat:@"%ld.%ld.%ld.%ld.%ld.%ld.%ld.%d|%.0fx%.0f@%.0f",
+            (long)i, (long)s, (long)r, (long)b, (long)sat, (long)t, (long)rf,
+            gBadgeBlurAvailable ? 1 : 0, size.width, size.height, scale];
 }
 
 // Real backdrop sampling: a private custom blur effect with a low radius,
@@ -102,13 +114,13 @@ static UIVisualEffect *GIBadgeMakeEffect(void) {
     UIBlurEffect *effect = nil;
     @try {
         effect = [[custom alloc] init];
-        [effect setValue:@(4.0) forKey:@"blurRadius"];
-        [effect setValue:@(2.4) forKey:@"saturationDeltaFactor"];
+        [effect setValue:@(gBadgeBlur) forKey:@"blurRadius"];
+        [effect setValue:@(gBadgeSaturation) forKey:@"saturationDeltaFactor"];
         [effect setValue:@(1.0) forKey:@"scale"];
         [effect setValue:@(0.0) forKey:@"grayscaleTintAlpha"];
         [effect setValue:@(0.5) forKey:@"grayscaleTintLevel"];
         [effect setValue:UIColor.whiteColor forKey:@"colorTint"];
-        [effect setValue:@(0.03) forKey:@"colorTintAlpha"];
+        [effect setValue:@(gBadgeTint) forKey:@"colorTintAlpha"];
     } @catch (__unused NSException *e) {
         effect = nil;
     }
@@ -184,7 +196,8 @@ static UIImage *GIBadgeTile(CGSize size, CGFloat scale) {
         CGContextSaveGState(c);
         [shape addClip];
         CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
-        CGFloat comps[] = {1.0, 1.0, 1.0, 0.10 * sheen,
+        CGFloat tintTop = 0.10 * sheen + gBadgeTint * 0.5;
+        CGFloat comps[] = {1.0, 1.0, 1.0, tintTop,
                            1.0, 1.0, 1.0, 0.02 * sheen};
         CGFloat locs[] = {0.0, 1.0};
         CGGradientRef grad = CGGradientCreateWithColorComponents(space, comps, locs, 2);
@@ -197,8 +210,9 @@ static UIImage *GIBadgeTile(CGSize size, CGFloat scale) {
         CGContextSaveGState(c);
         [shape addClip];
         CGColorSpaceRef spaceDark = CGColorSpaceCreateDeviceRGB();
+        CGFloat refractAlpha = MIN((CGFloat)0.65, 0.20 * master * gBadgeRefract);
         CGFloat compsDark[] = {0.0, 0.0, 0.0, 0.0,
-                               0.0, 0.0, 0.0, 0.20 * master};
+                               0.0, 0.0, 0.0, refractAlpha};
         CGFloat locsDark[] = {0.50, 1.0};
         CGGradientRef gradDark = CGGradientCreateWithColorComponents(spaceDark, compsDark, locsDark, 2);
         CGContextDrawLinearGradient(c, gradDark, CGPointMake(0, 0), CGPointMake(0, size.height), 0);
@@ -292,6 +306,12 @@ static void GIBadgeUpdate(UIView *view) {
         [last isEqualToString:signature]) {
         overlay.hidden = NO;
         return;
+    }
+
+    // Sliders changed: refresh the backdrop effect (blur/saturation/tint).
+    if (blurView) {
+        UIVisualEffect *refreshed = GIBadgeMakeEffect();
+        if (refreshed) blurView.effect = refreshed;
     }
 
     UIImage *tile = GIBadgeTile(view.bounds.size, scale);
