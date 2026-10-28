@@ -318,12 +318,21 @@ static UIImage *GIIconPackImageForBundleID(NSString *bundleID) {
 
     NSFileManager *fm = [NSFileManager defaultManager];
     UIImage *image = nil;
+    NSString *usedPath = nil;
     for (NSString *suffix in @[@"@3x.png", @"@2x.png", @".png"]) {
         NSString *path = [kIconPackDir stringByAppendingPathComponent:
                           [bundleID stringByAppendingString:suffix]];
         if ([fm fileExistsAtPath:path]) {
             image = [UIImage imageWithContentsOfFile:path];
-            if (image) break;
+            if (image) { usedPath = path; break; }
+        }
+    }
+    if (usedPath) {
+        static NSMutableSet<NSString *> *loggedPaths;
+        if (!loggedPaths) loggedPaths = [NSMutableSet set];
+        if (![loggedPaths containsObject:bundleID]) {
+            [loggedPaths addObject:bundleID];
+            GILogMain(@"iconpack file %@ -> %@", bundleID, usedPath.lastPathComponent);
         }
     }
     gIconPackCache[bundleID] = image ?: (id)NSNull.null;

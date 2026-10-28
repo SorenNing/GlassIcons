@@ -90,13 +90,8 @@ static void GIBadgeSuppressRedPlate(UIView *view) {
                       [name rangeOfString:@"Label"].location != NSNotFound ||
                       [name rangeOfString:@"Text"].location != NSNotFound;
         if (isText) {
-            if ([sub respondsToSelector:@selector(setTextColor:)]) {
-                [(id)sub setTextColor:UIColor.whiteColor];
-            }
-            sub.layer.shadowColor = UIColor.blackColor.CGColor;
-            sub.layer.shadowOpacity = 0.42f;
-            sub.layer.shadowRadius = 1.4f;
-            sub.layer.shadowOffset = CGSizeMake(0.0, 0.5);
+            // We redraw the digits ourselves; hide the original to avoid doubling.
+            sub.alpha = 0.0;
             continue;
         }
 
@@ -117,7 +112,21 @@ static void GIBadgeSuppressRedPlate(UIView *view) {
     }
 }
 
-static UIImage *GIBadgeTile(CGSize size, CGFloat scale) {
+static NSString *GIBadgeDisplayText(UIView *view) {
+    for (NSString *key in @[@"displayingText", @"text", @"badgeText"]) {
+        id value = nil;
+        @try { value = [view valueForKey:key]; } @catch (__unused NSException *e) { value = nil; }
+        if ([value isKindOfClass:NSString.class] && [(NSString *)value length]) return value;
+    }
+    for (UIView *sub in view.subviews) {
+        id value = nil;
+        @try { value = [sub valueForKey:@"text"]; } @catch (__unused NSException *e) { value = nil; }
+        if ([value isKindOfClass:NSString.class] && [(NSString *)value length]) return value;
+    }
+    return nil;
+}
+
+static UIImage *GIBadgeTile(CGSize size, CGFloat scale, NSString *text) {
     UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
     format.scale = scale;
     format.opaque = NO;
@@ -154,6 +163,40 @@ static UIImage *GIBadgeTile(CGSize size, CGFloat scale) {
         CGGradientRelease(gradDark);
         CGColorSpaceRelease(spaceDark);
         CGContextRestoreGState(c);
+
+        // Digits: redraw here because the system may bake them into the plate
+        // bitmap that we clear to get transparency.
+        if (text.length) {
+            CGFloat fontSize = size.height * 0.62;
+            UIFont *font = [UIFont monospacedDigitSystemFontOfSize:fontSize weight:UIFontWeightBold];
+            NSDictionary *attrs = @{
+                NSFontAttributeName: font,
+                NSForegroundColorAttributeName: UIColor.whiteColor,
+                NSShadowAttributeName: ({
+                    NSShadow *shadow = [NSShadow new];
+                    shadow.shadowColor = [UIColor colorWithWhite:0.0 alpha:0.45];
+                    shadow.shadowBlurRadius = size.height * 0.10;
+                    shadow.shadowOffset = CGSizeMake(0.0, size.height * 0.03);
+                    shadow;
+                })
+            };
+            CGSize textSize = [text sizeWithAttributes:attrs];
+            // Long counts (e.g. 725) need a smaller size to stay inside the pill.
+            CGFloat maxWidth = size.width - size.height * 0.30;
+            if (textSize.width > maxWidth && textSize.width > 0) {
+                CGFloat shrink = maxWidth / textSize.width;
+                UIFont *smaller = [UIFont monospacedDigitSystemFontOfSize:fontSize * shrink
+                                                                  weight:UIFontWeightBold];
+                NSMutableDictionary *adjusted = [attrs mutableCopy];
+                adjusted[NSFontAttributeName] = smaller;
+                attrs = adjusted;
+                textSize = [text sizeWithAttributes:attrs];
+            }
+            CGRect textRect = CGRectMake((size.width - textSize.width) * 0.5,
+                                         (size.height - textSize.height) * 0.5,
+                                         textSize.width, textSize.height);
+            [text drawInRect:textRect withAttributes:attrs];
+        }
 
         // Lens rim: bright top, fading down, faint cool bottom (dispersion hint).
         CGFloat lineWidth = MAX(0.6, MIN(1.0, size.height * 0.030));
@@ -203,7 +246,8 @@ static void GIBadgeUpdate(UIView *view) {
         return;
     }
 
-    UIImage *tile = GIBadgeTile(view.bounds.size, scale);
+    NSString *badgeText = GIBadgeDisplayText(view);
+    UIImage *tile = GIBadgeTile(view.bounds.size, scale, badgeText);
     if (!tile) return;
 
     if (!overlay) {
