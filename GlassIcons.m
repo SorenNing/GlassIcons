@@ -234,6 +234,21 @@ static void GIUpdateOverlay(UIView *view) {
     CGRect bounds = view.bounds;
     CGFloat factor = GIStrengthForView(view);
     CGFloat intensity = GIEffectiveIntensity(view);
+
+    // Folder icon views are taller than the icon itself (they include the
+    // label area). Draw the glass on the square icon area only so folder
+    // tiles match app-icon size exactly.
+    @try {
+        id icon = [view valueForKey:@"icon"];
+        if (icon && [NSStringFromClass([icon class]) rangeOfString:@"FolderIcon"].location != NSNotFound) {
+            CGFloat side = MIN(CGRectGetWidth(bounds), CGRectGetHeight(bounds));
+            side = MIN(side, 60.0);
+            bounds = CGRectMake(CGRectGetMidX(bounds) - side * 0.5,
+                                CGRectGetMinY(bounds),
+                                side, side);
+        }
+    } @catch (__unused NSException *e) {}
+
     NSString *signature = GISettingsSignature(factor);
     NSString *lastSignature = objc_getAssociatedObject(view, kGlassSignatureKey);
 
