@@ -92,6 +92,15 @@ static CGFloat GIEffectiveIntensity(UIView *view) {
     return intensity;
 }
 
+// While a folder view controller is visible on screen, the home screen folder
+// icon views are being zoom-stretched into the panel; the overlay would appear
+// as a giant misplaced ring. Hide overlays on folder icons during that time.
+static BOOL GILargeTransformInView(UIView *view) {
+    CGAffineTransform t = view.transform;
+    CGFloat scale = (CGFloat)fabs(sqrt(t.a * t.a + t.b * t.b));
+    return scale > (CGFloat)1.10;
+}
+
 static CGImageRef GIFindIconImage(UIView *view) {
     id contents = view.layer.contents;
     if (contents && CFGetTypeID((__bridge CFTypeRef)contents) == CGImageGetTypeID()) {
@@ -238,9 +247,11 @@ static void GIUpdateOverlay(UIView *view) {
     // Folder icon views are taller than the icon itself (they include the
     // label area). Draw the glass on the square icon area only so folder
     // tiles match app-icon size exactly.
+    BOOL isFolderIcon = NO;
     @try {
         id icon = [view valueForKey:@"icon"];
-        if (icon && [NSStringFromClass([icon class]) rangeOfString:@"FolderIcon"].location != NSNotFound) {
+        isFolderIcon = icon && [NSStringFromClass([icon class]) rangeOfString:@"FolderIcon"].location != NSNotFound;
+        if (isFolderIcon) {
             CGFloat side = MIN(CGRectGetWidth(bounds), CGRectGetHeight(bounds));
             side = MIN(side, 60.0);
             bounds = CGRectMake(CGRectGetMidX(bounds) - side * 0.5,
@@ -248,6 +259,15 @@ static void GIUpdateOverlay(UIView *view) {
                                 side, side);
         }
     } @catch (__unused NSException *e) {}
+
+    // Zoom-stretched folder icons: drop the overlay for this pass so the
+    // stretched ring never flashes; it reappears when the transform settles.
+    if (isFolderIcon && GILargeTransformInView(view)) {
+        if (overlay) {
+            overlay.hidden = YES;
+        }
+        return;
+    }
 
     NSString *signature = GISettingsSignature(factor);
     NSString *lastSignature = objc_getAssociatedObject(view, kGlassSignatureKey);
@@ -279,6 +299,7 @@ static void GIUpdateOverlay(UIView *view) {
     overlay.contents = (__bridge id)tile.CGImage;
     overlay.contentsScale = scale;
     overlay.frame = bounds;
+    overlay.hidden = NO;
     [CATransaction commit];
 
     objc_setAssociatedObject(view, kGlassSignatureKey, signature, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
