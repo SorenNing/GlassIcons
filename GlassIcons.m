@@ -69,22 +69,14 @@ static void GIReloadPreferencesIfNeeded(void) {
     GIReadPreferences();
 }
 
-// Folders: the icon layer does NOT draw on folder icon views at all (0.9.x
-// lessons). Instead, the OPEN folder panel (SBFolderView) gets its own glass
-// rim drawn by GIPanelDelegate below — a separate view, no icon surgery.
+// Treat every icon view the same: folders get glass exactly like app icons
+// (user's "treat it as a normal app" directive). The open-folder panel is a
+// different view class entirely and is untouched here. Only sub-40pt views
+// are ignored to avoid noise.
 static BOOL GIShouldSkipView(UIView *view) {
     if (!view) return YES;
     CGFloat side = MIN(CGRectGetWidth(view.bounds), CGRectGetHeight(view.bounds));
-    if (side < 40.0) return YES;
-
-    @try {
-        id icon = [view valueForKey:@"icon"];
-        if (icon && [NSStringFromClass([icon class]) rangeOfString:@"FolderIcon"].location != NSNotFound) {
-            return YES;
-        }
-    } @catch (__unused NSException *e) {}
-
-    return NO;
+    return side < 40.0;
 }
 
 static CGImageRef GIFindIconImage(UIView *view) {
@@ -229,12 +221,46 @@ static void GIUpdateOverlay(UIView *view) {
     CGRect bounds = view.bounds;
     CGFloat factor = GIStrengthForView(view);
     CGFloat intensity = gIntensity;
+
+    // Folder icon views include a label area below the icon; keep the glass
+    // on the square top region so the tile matches the icon itself (same as
+    // any app icon, whose view is already square).
+    @try {
+        id icon = [view valueForKey:@"icon"];
+        if (icon && [NSStringFromClass([icon class]) rangeOfString:@"FolderIcon"].location != NSNotFound) {
+            CGFloat side = MIN(CGRectGetWidth(bounds), CGRectGetHeight(bounds));
+            side = MIN(side, 60.0);
+            bounds = CGRectMake(CGRectGetMidX(bounds) - side * 0.5,
+                                CGRectGetMinY(bounds),
+                                side, side);
+        }
+    } @catch (__unused NSException *e) {}
+
     NSString *signature = GISettingsSignature(factor);
     NSString *lastSignature = objc_getAssociatedObject(view, kGlassSignatureKey);
+
+    // Guard for the open-folder window: the system may detach the icon view
+    // from the visible hierarchy while the panel is up. Only draw when the
+    // view is actually on screen; hide any stale overlay otherwise.
+    if (view.window == nil) {
+        if (overlay && !overlay.hidden) {
+            [CATransaction begin];
+            [CATransaction setDisableActions:YES];
+            overlay.hidden = YES;
+            [CATransaction commit];
+        }
+        return;
+    }
 
     if (overlay &&
         CGRectEqualToRect(overlay.frame, bounds) &&
         [lastSignature isEqualToString:signature]) {
+        if (overlay.hidden) {
+            [CATransaction begin];
+            [CATransaction setDisableActions:YES];
+            overlay.hidden = NO;
+            [CATransaction commit];
+        }
         return;  // nothing changed: no layout work at all
     }
 
