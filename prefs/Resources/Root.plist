@@ -258,6 +258,22 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
+			<string>把 PNG 放进 /var/mobile/Library/GlassIcons/Icons/，文件名用 App 的 Bundle ID，例如 com.tencent.xin.png（可加 @2x/@3x）。放好后点下面的按钮。</string>
+			<key>label</key>
+			<string>桌面图标包</string>
+		</dict>
+		<dict>
+			<key>action</key>
+			<string>reloadIconPack:</string>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>重新加载图标包</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
 			<string>GlassIcons
 作者: Ning
 调整后回到桌面立即生效，无需注销。</string>

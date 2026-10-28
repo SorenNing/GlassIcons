@@ -27,6 +27,10 @@ static NSUInteger gInstallAttempts = 0;
 static CFTimeInterval gLastPrefsRead = 0.0;
 static NSMutableDictionary<NSString *, UIImage *> *gTileCache = nil;
 static NSHashTable<UIView *> *gTrackedViews = nil;
+static NSMutableDictionary<NSString *, UIImage *> *gIconPackCache = nil;
+static const void *kIconPackLayerKey = &kIconPackLayerKey;
+static const void *kIconPackSignatureKey = &kIconPackSignatureKey;
+static NSString * const kIconPackDir = @"/var/mobile/Library/GlassIcons/Icons";
 
 static BOOL GIIsDisabled(void) { return gDisabled; }
 
@@ -211,13 +215,124 @@ static UIImage *GITileImage(CGSize size, CGFloat scale, CGFloat factor, CGFloat 
     return image;
 }
 
+
+#pragma mark - Icon pack
+
+// Bundle id of the icon rendered by this image view (best effort across versions).
+static NSString *GIIconBundleID(UIView *view) {
+    id icon = nil;
+    @try { icon = [view valueForKey:@"icon"]; } @catch (__unused NSException *e) { return nil; }
+    if (!icon) return nil;
+
+    for (NSString *key in @[@"applicationBundleID", @"bundleIdentifier", @"iconIdentifier"]) {
+        id value = nil;
+        @try { value = [icon valueForKey:key]; } @catch (__unused NSException *e) { value = nil; }
+        if ([value isKindOfClass:NSString.class] && [(NSString *)value length]) return value;
+    }
+
+    id app = nil;
+    @try { app = [icon valueForKey:@"application"]; } @catch (__unused NSException *e) { app = nil; }
+    if (app) {
+        id bid = nil;
+        @try { bid = [app valueForKey:@"bundleIdentifier"]; } @catch (__unused NSException *e) { bid = nil; }
+        if ([bid isKindOfClass:NSString.class] && [(NSString *)bid length]) return bid;
+    }
+    return nil;
+}
+
+static UIImage *GIIconPackImageForBundleID(NSString *bundleID) {
+    if (!bundleID.length) return nil;
+
+    if (!gIconPackCache) {
+        gIconPackCache = [NSMutableDictionary dictionary];
+        [[NSFileManager defaultManager] createDirectoryAtPath:kIconPackDir
+                                  withIntermediateDirectories:YES
+                                                   attributes:nil
+                                                        error:NULL];
+    }
+
+    UIImage *cached = gIconPackCache[bundleID];
+    if (cached) return (cached == (id)NSNull.null) ? nil : cached;
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+    UIImage *image = nil;
+    for (NSString *suffix in @[@"@3x.png", @"@2x.png", @".png"]) {
+        NSString *path = [kIconPackDir stringByAppendingPathComponent:
+                          [bundleID stringByAppendingString:suffix]];
+        if ([fm fileExistsAtPath:path]) {
+            image = [UIImage imageWithContentsOfFile:path];
+            if (image) break;
+        }
+    }
+    gIconPackCache[bundleID] = image ?: (id)NSNull.null;
+    return image;
+}
+
+static void GIUpdateOverlay(UIView *view);
+
+static void GIIconPackReload(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [gIconPackCache removeAllObjects];
+        for (UIView *view in [gTrackedViews allObjects]) {
+            objc_setAssociatedObject(view, kIconPackSignatureKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            @try { GIUpdateOverlay(view); } @catch (__unused NSException *e) {}
+        }
+    });
+}
+
+// Returns YES when a custom icon was applied (glass is skipped in that case).
+static BOOL GIApplyIconPack(UIView *view, CGRect bounds) {
+    NSString *bundleID = GIIconBundleID(view);
+    UIImage *image = GIIconPackImageForBundleID(bundleID);
+    CALayer *packLayer = objc_getAssociatedObject(view, kIconPackLayerKey);
+
+    if (!image) {
+        if (packLayer) {
+            [packLayer removeFromSuperlayer];
+            objc_setAssociatedObject(view, kIconPackLayerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        return NO;
+    }
+
+    NSString *signature = [NSString stringWithFormat:@"%@|%.0fx%.0f", bundleID, bounds.size.width, bounds.size.height];
+    if (packLayer && [objc_getAssociatedObject(view, kIconPackSignatureKey) isEqualToString:signature]) {
+        packLayer.hidden = NO;
+        return YES;
+    }
+
+    if (!packLayer) {
+        packLayer = [CALayer layer];
+        packLayer.name = @"com.soren.glassicons.iconpack";
+        packLayer.contentsGravity = kCAGravityResizeAspectFill;
+        packLayer.masksToBounds = YES;
+        objc_setAssociatedObject(view, kIconPackLayerKey, packLayer, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [view.layer addSublayer:packLayer];
+    }
+
+    CGFloat side = MIN(CGRectGetWidth(bounds), CGRectGetHeight(bounds));
+    CGRect square = CGRectMake(CGRectGetMidX(bounds) - side * 0.5,
+                               CGRectGetMinY(bounds),
+                               side, side);
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    packLayer.contents = (__bridge id)image.CGImage;
+    packLayer.contentsScale = image.scale;
+    packLayer.frame = square;
+    packLayer.cornerRadius = side * 0.225;
+    packLayer.hidden = NO;
+    [CATransaction commit];
+
+    objc_setAssociatedObject(view, kIconPackSignatureKey, signature, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return YES;
+}
+
 static void GIUpdateOverlay(UIView *view) {
     if (!view || !view.layer || CGRectIsEmpty(view.bounds)) return;
 
     GIReloadPreferencesIfNeeded();
 
     CALayer *overlay = objc_getAssociatedObject(view, kGlassOverlayKey);
-    if (!gEnabled || GIIsDisabled() || gIntensity <= 0.001 || GIShouldSkipView(view)) {
+    if (!gEnabled || GIIsDisabled() || GIShouldSkipView(view)) {
         if (overlay) {
             [overlay removeFromSuperlayer];
             objc_setAssociatedObject(view, kGlassOverlayKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -227,6 +342,25 @@ static void GIUpdateOverlay(UIView *view) {
     }
 
     CGRect bounds = view.bounds;
+
+    // Custom icon pack takes precedence and is shown as-is (no glass for now).
+    if (GIApplyIconPack(view, bounds)) {
+        if (overlay) {
+            [overlay removeFromSuperlayer];
+            objc_setAssociatedObject(view, kGlassOverlayKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(view, kGlassSignatureKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        return;
+    }
+
+    if (gIntensity <= 0.001) {
+        if (overlay) {
+            [overlay removeFromSuperlayer];
+            objc_setAssociatedObject(view, kGlassOverlayKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        return;
+    }
+
     CGFloat factor = GIStrengthForView(view);
     CGFloat intensity = gIntensity;
     NSString *signature = GISettingsSignature(factor);
@@ -309,6 +443,12 @@ static void GIInstallHook(void) {
     gInstalling = NO;
 }
 
+static void GIIconPackChanged(CFNotificationCenterRef center __unused, void *observer __unused,
+                              CFStringRef name __unused, const void *object __unused,
+                              CFDictionaryRef userInfo __unused) {
+    GIIconPackReload();
+}
+
 static void GIPreferencesChanged(CFNotificationCenterRef center __unused, void *observer __unused, CFStringRef name __unused,
                                  const void *object __unused, CFDictionaryRef userInfo __unused) {
     gLastPrefsRead = 0.0;  // force a fresh read on the next icon layout
@@ -335,5 +475,9 @@ __attribute__((constructor)) static void GIInitialize(void) {
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,
                                    (CFNotificationCallback)GIPreferencesChanged,
                                    CFSTR("com.soren.glassicons.changed"), NULL,
+                                   CFNotificationSuspensionBehaviorDeliverImmediately);
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,
+                                   (CFNotificationCallback)GIIconPackChanged,
+                                   CFSTR("com.soren.glassicons.iconpack"), NULL,
                                    CFNotificationSuspensionBehaviorDeliverImmediately);
 }
