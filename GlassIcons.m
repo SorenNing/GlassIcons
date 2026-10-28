@@ -368,9 +368,12 @@ static void GIScanAllIcons(void) {
 
     dispatch_async(dispatch_get_main_queue(), ^{
         NSUInteger touched = 0;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
         for (UIWindow *window in UIApplication.sharedApplication.windows) {
             GIWalkForIcons(window, 0, &touched);
         }
+#pragma clang diagnostic pop
         GILogMain(@"scan: visited %lu icon views", (unsigned long)touched);
     });
 }
