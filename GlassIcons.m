@@ -27,6 +27,7 @@ static NSUInteger gInstallAttempts = 0;
 static CFTimeInterval gLastPrefsRead = 0.0;
 static NSMutableDictionary<NSString *, UIImage *> *gTileCache = nil;
 static NSHashTable<UIView *> *gTrackedViews = nil;
+static BOOL gIconPackEnabled = NO;
 static NSMutableDictionary<NSString *, UIImage *> *gIconPackCache = nil;
 static const void *kIconPackLayerKey = &kIconPackLayerKey;
 static const void *kIconPackSignatureKey = &kIconPackSignatureKey;
@@ -340,6 +341,7 @@ static UIImage *GIIconPackImageForBundleID(NSString *bundleID) {
 }
 
 static void GIUpdateOverlay(UIView *view);
+static void GIInstallCacheHooks(void);
 
 #pragma mark - Whole-tree scan
 
@@ -375,6 +377,10 @@ static void GIScanAllIcons(void) {
 
 static void GIIconPackReload(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
+        GIIconPackEnsureDirectory();
+        NSUInteger count = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:kIconPackDir error:NULL].count;
+        gIconPackEnabled = count > 0;
+        if (gIconPackEnabled) GIInstallCacheHooks();
         [gIconPackCache removeAllObjects];
         for (UIView *view in [gTrackedViews allObjects]) {
             objc_setAssociatedObject(view, kIconPackSignatureKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -517,6 +523,72 @@ static void GIHookedLayoutSubviews(UIView *self, SEL _cmd) {
     }
 }
 
+
+#pragma mark - Icon image cache hooks (data layer, SnowBoard-style)
+
+static IMP gCacheOrigImageForIcon = NULL;
+static IMP gCacheOrigCachedImageForIcon = NULL;
+
+static UIImage *GIThemedImageForBundleID(NSString *bundleID) {
+    if (!bundleID.length) return nil;
+    return GIIconPackImageForBundleID(bundleID);
+}
+
+// Interposed below via method exchange on several cache classes; each returns
+// the themed image when we have one, else the original result.
+static UIImage *GICacheImageFromIcon(id icon, NSString *cacheClass __unused) {
+    if (!icon || !gIconPackEnabled) return nil;
+    NSString *bundleID = nil;
+    for (NSString *key in @[@"applicationBundleID", @"bundleIdentifier", @"leafIdentifier", @"identifier"]) {
+        id value = nil;
+        @try { value = [icon valueForKey:key]; } @catch (__unused NSException *e) { value = nil; }
+        if ([value isKindOfClass:NSString.class] && [(NSString *)value length]) {
+            bundleID = (NSString *)value;
+            break;
+        }
+    }
+    if (!bundleID.length) return nil;
+    UIImage *themed = GIThemedImageForBundleID(bundleID);
+    if (themed && ![themed isKindOfClass:UIImage.class]) themed = nil;
+    return themed;
+}
+
+static void GIInstallCacheHooks(void) {
+    SEL selImage = @selector(imageForIcon:);
+    SEL selCached = @selector(cachedImageForIcon:);
+
+    NSArray<NSString *> *cacheClasses = @[@"SBIconImageCache", @"SBHIconImageCache",
+                                          @"SBFolderIconImageCache"];
+    for (NSString *className in cacheClasses) {
+        Class cls = objc_getClass(className.UTF8String);
+        if (!cls) continue;
+        Method m = class_getInstanceMethod(cls, selImage);
+        if (m && !gCacheOrigImageForIcon) {
+            gCacheOrigImageForIcon = method_getImplementation(m);
+            IMP themed = imp_implementationWithBlock(^UIImage *(id self, id icon) {
+                UIImage *themed = GICacheImageFromIcon(icon, className);
+                if (themed) return themed;
+                UIImage *(*orig)(id, SEL, id) = (UIImage *(*)(id, SEL, id))gCacheOrigImageForIcon;
+                return orig(self, selImage, icon);
+            });
+            method_setImplementation(m, themed);
+            GILogMain(@"cache hook installed on %@ imageForIcon:", className);
+        }
+        Method m2 = class_getInstanceMethod(cls, selCached);
+        if (m2 && !gCacheOrigCachedImageForIcon) {
+            gCacheOrigCachedImageForIcon = method_getImplementation(m2);
+            IMP themed2 = imp_implementationWithBlock(^UIImage *(id self, id icon) {
+                UIImage *themed = GICacheImageFromIcon(icon, className);
+                if (themed) return themed;
+                UIImage *(*orig)(id, SEL, id) = (UIImage *(*)(id, SEL, id))gCacheOrigCachedImageForIcon;
+                return orig(self, selCached, icon);
+            });
+            method_setImplementation(m2, themed2);
+            GILogMain(@"cache hook installed on %@ cachedImageForIcon:", className);
+        }
+    }
+}
+
 static void GIInstallHook(void) {
     if (gInstalling || gHookInstalled) return;
     gInstalling = YES;
@@ -582,8 +654,14 @@ static void GIPreferencesChanged(CFNotificationCenterRef center __unused, void *
 __attribute__((constructor)) static void GIInitialize(void) {
     if (![NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.springboard"]) return;
     GIIconPackEnsureDirectory();
-    GILogMain(@"init: iconpack dir contents = %lu", (unsigned long)[[NSFileManager defaultManager]
-              contentsOfDirectoryAtPath:kIconPackDir error:NULL].count);
+    NSUInteger packCount = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:kIconPackDir
+                                    error:NULL].count;
+    gIconPackEnabled = packCount > 0;
+    GILogMain(@"init: iconpack dir contents = %lu (enabled=%d)", (unsigned long)packCount, gIconPackEnabled);
+    if (gIconPackEnabled) {
+        // Cache-layer hooks must install early, before the icon image caches fill.
+        dispatch_async(dispatch_get_main_queue(), ^{ GIInstallCacheHooks(); });
+    }
     GIReadPreferences();
     GIReadDisabledState();
     GIInstallHook();
