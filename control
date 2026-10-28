@@ -1,6 +1,6 @@
 Package: com.soren.glassicons
 Name: GlassIcons
-Version: 0.9.0
+Version: 0.9.1
 Architecture: iphoneos-arm64e
 Description: Subtle glass rim and sheen for SpringBoard app icons (iOS 15-17, RootHide)
 Maintainer: Ning

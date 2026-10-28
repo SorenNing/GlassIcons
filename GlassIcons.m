@@ -69,9 +69,9 @@ static void GIReloadPreferencesIfNeeded(void) {
     GIReadPreferences();
 }
 
-// Folders are fully excluded (user decision after 0.8.x iterations): closed
-// folder icons, open folder panels and icons inside them all skip the glass.
-// Only app icons on the home screen get the overlay.
+// Same logic as the proven 0.2.x–0.7.1 builds: skip folder icons and tiny
+// views only. NO superview traversal — the home screen hierarchy contains
+// SBFolder-prefixed intermediate views and matching them kills everything.
 static BOOL GIShouldSkipView(UIView *view) {
     if (!view) return YES;
     CGFloat side = MIN(CGRectGetWidth(view.bounds), CGRectGetHeight(view.bounds));
@@ -84,13 +84,6 @@ static BOOL GIShouldSkipView(UIView *view) {
         }
     } @catch (__unused NSException *e) {}
 
-    // Anything presented inside an open folder lives under SBFolder* views.
-    // SBRootFolderView (the whole home screen) must NOT match.
-    UIView *parent = view.superview;
-    for (int depth = 0; depth < 8 && parent; depth++, parent = parent.superview) {
-        NSString *name = NSStringFromClass([parent class]);
-        if ([name hasPrefix:@"SBFolder"] && ![name hasPrefix:@"SBRootFolder"]) return YES;
-    }
     return NO;
 }
 
