@@ -1,21 +1,18 @@
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
-#import <objc/message.h>
 #import <CoreFoundation/CoreFoundation.h>
-#import <CoreImage/CoreImage.h>
 #import <dispatch/dispatch.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <math.h>
 
-// Liquid-glass badges (SBIconBadgeView / SBIconParallaxBadgeView).
+// Glass badges (SBIconBadgeView / SBIconParallaxBadgeView).
 //
-// Apple's Liquid Glass is "clear" glass over rich content: the underlying
-// artwork shows through, blurred and colour-boosted, with a bright lens rim,
-// a specular highlight and a faint dark refraction band. iOS 26's real
-// UIGlassEffect is unavailable on iOS 17, so the backdrop is sampled from the
-// icon artwork that the badge sits on, blurred + saturated with Core Image,
-// then finished with the glass rim layers.
+// Deliberately transparent: no plate, no blur, no backdrop capture. The badge
+// shows only the glass "shape" — a lens rim that is bright on top and fades
+// downward, a specular highlight near the top, and a faint dark refraction
+// band along the bottom edge. The system's solid red plate is removed and the
+// digits are forced white with a soft shadow.
 
 static CFStringRef const kBadgeDomain = CFSTR("com.soren.glassicons");
 
@@ -28,30 +25,8 @@ static BOOL gBadgeEnabled = YES;
 static CGFloat gBadgeIntensity = 0.90;
 static CGFloat gBadgeSheen = 0.75;
 static CGFloat gBadgeRim = 0.80;
-static CGFloat gBadgeBlur = 4.0;         // backdrop blur radius
-static CGFloat gBadgeSaturation = 2.4;   // backdrop colour boost
-static CGFloat gBadgeTint = 0.03;        // adaptive tint alpha
-static CGFloat gBadgeRefract = 1.0;      // bottom refraction band
-static CIContext *gBadgeCIContext = nil;
-
-static void GIBadgeLog(NSString *format, ...) {
-    va_list args;
-    va_start(args, format);
-    NSString *message = [[NSString alloc] initWithFormat:format arguments:args];
-    va_end(args);
-    NSString *line = [NSString stringWithFormat:@"[%@] %@\n", [NSDate date], message];
-    NSString *path = @"/var/mobile/Library/GlassIconsBadge.log";
-    NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:path];
-    if (!handle) {
-        [[NSFileManager defaultManager] createFileAtPath:path contents:nil attributes:nil];
-        handle = [NSFileHandle fileHandleForWritingAtPath:path];
-    }
-    @try {
-        [handle seekToEndOfFile];
-        [handle writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
-        [handle closeFile];
-    } @catch (__unused NSException *e) {}
-}
+static CGFloat gBadgeTint = 0.02;
+static CGFloat gBadgeRefract = 1.0;
 
 static CGFloat GIBadgeNumber(CFStringRef key, CGFloat fallback) {
     CFPropertyListRef value = CFPreferencesCopyAppValue(key, kBadgeDomain);
@@ -77,203 +52,22 @@ static void GIBadgeReadPrefs(void) {
     gBadgeIntensity = fmax(0.0, fmin(5.0, GIBadgeNumber(CFSTR("BadgeIntensity"), 0.90)));
     gBadgeSheen = fmax(0.0, fmin(5.0, GIBadgeNumber(CFSTR("BadgeSheen"), 0.75)));
     gBadgeRim = fmax(0.0, fmin(5.0, GIBadgeNumber(CFSTR("BadgeRim"), 0.80)));
-    gBadgeBlur = fmax(0.0, fmin(20.0, GIBadgeNumber(CFSTR("BadgeBlur"), 4.0)));
-    gBadgeSaturation = fmax(0.0, fmin(4.0, GIBadgeNumber(CFSTR("BadgeSaturation"), 2.4)));
-    gBadgeTint = fmax(0.0, fmin(1.0, GIBadgeNumber(CFSTR("BadgeTint"), 0.03)));
+    gBadgeTint = fmax(0.0, fmin(1.0, GIBadgeNumber(CFSTR("BadgeTint"), 0.02)));
     gBadgeRefract = fmax(0.0, fmin(5.0, GIBadgeNumber(CFSTR("BadgeRefract"), 1.0)));
 }
 
-#pragma mark - Backdrop sampling
-
-static CGImageRef GIImageFromLayerTree(CALayer *layer) {
-    if (!layer) return NULL;
-    id contents = layer.contents;
-    if (contents && CFGetTypeID((__bridge CFTypeRef)contents) == CGImageGetTypeID()) {
-        return (__bridge CGImageRef)contents;
-    }
-    for (CALayer *sub in layer.sublayers) {
-        CGImageRef img = GIImageFromLayerTree(sub);
-        if (img) return img;
-    }
-    return NULL;
-}
-
-// The badge sits on top of an app icon image view; that artwork is the real
-// backdrop the glass should refract.
-static UIView *GIBadgeFindBackdropView(UIView *badge) {
-    UIView *container = badge.superview;
-    for (int depth = 0; depth < 4 && container; depth++, container = container.superview) {
-        for (UIView *sibling in container.subviews) {
-            if (sibling == badge || [sibling isDescendantOfView:badge]) continue;
-            CGImageRef direct = GIImageFromLayerTree(sibling.layer);
-            if (direct && CGImageGetWidth(direct) >= 24) return sibling;
-            for (UIView *child in sibling.subviews) {
-                CGImageRef img = GIImageFromLayerTree(child.layer);
-                if (img && CGImageGetWidth(img) >= 24) return child;
-            }
-        }
-    }
-    return nil;
-}
-
-static CGImageRef GIBadgeCropBackdrop(UIView *badge, CGSize *pixelSize) {
-    UIView *source = GIBadgeFindBackdropView(badge);
-    if (!source) return NULL;
-
-    CGImageRef image = GIImageFromLayerTree(source.layer);
-    if (!image) return NULL;
-
-    CGRect sourceBounds = source.bounds;
-    if (sourceBounds.size.width <= 1.0 || sourceBounds.size.height <= 1.0) return NULL;
-
-    CGRect rect = [badge convertRect:badge.bounds toView:source];
-    CGFloat scaleX = (CGFloat)CGImageGetWidth(image) / sourceBounds.size.width;
-    CGFloat scaleY = (CGFloat)CGImageGetHeight(image) / sourceBounds.size.height;
-
-    CGRect pixelRect = CGRectMake((rect.origin.x - sourceBounds.origin.x) * scaleX,
-                                  (rect.origin.y - sourceBounds.origin.y) * scaleY,
-                                  rect.size.width * scaleX,
-                                  rect.size.height * scaleY);
-    pixelRect = CGRectIntersection(pixelRect, CGRectMake(0, 0, CGImageGetWidth(image), CGImageGetHeight(image)));
-    if (CGRectIsNull(pixelRect) || pixelRect.size.width < 2.0 || pixelRect.size.height < 2.0) return NULL;
-
-    CGImageRef crop = CGImageCreateWithImageInRect(image, pixelRect);
-    if (crop && pixelSize) *pixelSize = pixelRect.size;
-    return crop;
-}
-
-static UIImage *GIBadgeBlurredBackdrop(CGImageRef crop) {
-    if (!crop) return nil;
-
-    CIImage *ciImage = [CIImage imageWithCGImage:crop];
-    CGRect extent = ciImage.extent;
-
-    CIImage *working = [ciImage imageByClampingToExtent];
-    if (gBadgeBlur > 0.05) {
-        CIFilter *blur = [CIFilter filterWithName:@"CIGaussianBlur"];
-        [blur setValue:working forKey:kCIInputImageKey];
-        [blur setValue:@(gBadgeBlur) forKey:kCIInputRadiusKey];
-        if (blur.outputImage) working = blur.outputImage;
-    }
-    if (fabs(gBadgeSaturation - 1.0) > 0.01) {
-        CIFilter *controls = [CIFilter filterWithName:@"CIColorControls"];
-        [controls setValue:working forKey:kCIInputImageKey];
-        [controls setValue:@(gBadgeSaturation) forKey:kCIInputSaturationKey];
-        [controls setValue:@(0.02) forKey:kCIInputBrightnessKey];
-        if (controls.outputImage) working = controls.outputImage;
-    }
-
-    if (!gBadgeCIContext) {
-        gBadgeCIContext = [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer: @NO}];
-    }
-    CGImageRef blurred = [gBadgeCIContext createCGImage:working fromRect:extent];
-    if (!blurred) return nil;
-    UIImage *result = [UIImage imageWithCGImage:blurred];
-    CGImageRelease(blurred);
-    return result;
-}
-
-#pragma mark - Badge plate
-
-
-#pragma mark - Live backdrop layer (render-server sampling)
-
-static const void *kBadgeBackdropKey = &kBadgeBackdropKey;
-static NSString *gBadgeBackdropMode = nil;   // "custom-filter" | "system-filter" | "none"
-
-static id GIBadgeFilterWithType(NSString *type) {
-    Class filterCls = NSClassFromString(@"CAFilter");
-    if (!filterCls) return nil;
-    SEL sel = NSSelectorFromString(@"filterWithType:");
-    if (![filterCls respondsToSelector:sel]) return nil;
-    id (*msgSend)(Class, SEL, NSString *) = (id (*)(Class, SEL, NSString *))objc_msgSend;
-    @try { return msgSend(filterCls, sel, type); } @catch (__unused NSException *e) { return nil; }
-}
-
-// A CABackdropLayer samples whatever is painted behind it, in the render
-// server — the same primitive 液态Dock uses. With the built-in gaussianBlur +
-// colorSaturate filters this gives a real, transparent backdrop capture
-// (no white material), which is the closest thing to "clear" Liquid Glass
-// available on iOS 17.
-static UIView *GIBadgeMakeBackdropView(CGSize size, CGFloat scale) {
-    Class layerCls = NSClassFromString(@"CABackdropLayer");
-    if (!layerCls) { gBadgeBackdropMode = @"none"; return nil; }
-
-    UIView *host = [[UIView alloc] initWithFrame:CGRectMake(0, 0, size.width, size.height)];
-    host.userInteractionEnabled = NO;
-    host.backgroundColor = UIColor.clearColor;
-    host.tag = 90002;
-
-    CALayer *backdrop = [[layerCls alloc] init];
-    @try {
-        [backdrop setValue:@NO forKey:@"windowServerAware"];
-        [backdrop setValue:@NO forKey:@"layerUsesCoreImageFilters"];
-        [backdrop setValue:@YES forKey:@"ignoresScreenClip"];
-        [backdrop setValue:@(scale) forKey:@"scale"];
-        [backdrop setValue:@"dylv.liquidglass" forKey:@"groupNamespace"];
-        [backdrop setValue:@"soren.glassicons.badge" forKey:@"groupName"];
-    } @catch (__unused NSException *e) {}
-
-    // Prefer the custom refraction shader if the ecosystem registered one,
-    // otherwise fall back to system blur + saturation (still live sampling).
-    id custom = GIBadgeFilterWithType(@"dylv.liquidglass.appicons");
-    if (custom) {
-        backdrop.filters = @[custom];
-        gBadgeBackdropMode = @"custom-filter";
-    } else {
-        NSMutableArray *filters = [NSMutableArray array];
-        id blur = GIBadgeFilterWithType(@"gaussianBlur");
-        if (blur) {
-            @try { [blur setValue:@(gBadgeBlur) forKey:@"inputRadius"]; } @catch (__unused NSException *e) {}
-            [filters addObject:blur];
-        }
-        id saturate = GIBadgeFilterWithType(@"colorSaturate");
-        if (saturate) {
-            @try { [saturate setValue:@(gBadgeSaturation) forKey:@"inputAmount"]; } @catch (__unused NSException *e) {}
-            [filters addObject:saturate];
-        }
-        backdrop.filters = filters.count ? filters : nil;
-        gBadgeBackdropMode = filters.count ? @"system-filter" : @"none";
-    }
-
-    backdrop.frame = host.bounds;
-    [host.layer addSublayer:backdrop];
-    [host.layer setValue:backdrop forKey:@"sorenBackdrop"];
-
-    GIBadgeLog(@"backdrop layer mode=%@ size=%.0fx%.0f", gBadgeBackdropMode, size.width, size.height);
-    return host;
-}
-
-static void GIBadgeSyncBackdrop(UIView *badge, UIView *backdropHost, CGFloat scale) {
-    if (!backdropHost) return;
-    if (!CGRectEqualToRect(backdropHost.frame, badge.bounds)) backdropHost.frame = badge.bounds;
-    CALayer *backdrop = [backdropHost.layer valueForKey:@"sorenBackdrop"];
-    if (backdrop) {
-        if (!CGRectEqualToRect(backdrop.frame, backdropHost.bounds)) backdrop.frame = backdropHost.bounds;
-        @try { [backdrop setValue:@(scale) forKey:@"scale"]; } @catch (__unused NSException *e) {}
-    }
-    // Clip the glass to the badge pill.
-    CGFloat corner = CGRectGetHeight(badge.bounds) * 0.5;
-    if (fabs(backdropHost.layer.cornerRadius - corner) > 0.5) {
-        backdropHost.layer.cornerRadius = corner;
-        backdropHost.layer.masksToBounds = YES;
-    }
-}
-
-static NSString *GIBadgeSignature(CGSize size, CGFloat scale, CGImageRef backdrop) {
+static NSString *GIBadgeSignature(CGSize size, CGFloat scale) {
     NSInteger i = (NSInteger)lroundf((float)(gBadgeIntensity * 20.0));
     NSInteger s = (NSInteger)lroundf((float)(gBadgeSheen * 20.0));
     NSInteger r = (NSInteger)lroundf((float)(gBadgeRim * 20.0));
-    NSInteger b = (NSInteger)lroundf((float)(gBadgeBlur * 2.0));
-    NSInteger sat = (NSInteger)lroundf((float)(gBadgeSaturation * 5.0));
-    NSInteger t = (NSInteger)lroundf((float)(gBadgeTint * 50.0));
+    NSInteger t = (NSInteger)lroundf((float)(gBadgeTint * 100.0));
     NSInteger rf = (NSInteger)lroundf((float)(gBadgeRefract * 20.0));
-    void *ptr = backdrop ? (void *)backdrop : NULL;
-    return [NSString stringWithFormat:@"%ld.%ld.%ld.%ld.%ld.%ld.%ld.%p|%.0fx%.0f@%.0f",
-            (long)i, (long)s, (long)r, (long)b, (long)sat, (long)t, (long)rf,
-            ptr, size.width, size.height, scale];
+    return [NSString stringWithFormat:@"%ld.%ld.%ld.%ld.%ld|%.0fx%.0f@%.0f",
+            (long)i, (long)s, (long)r, (long)t, (long)rf,
+            size.width, size.height, scale];
 }
 
+// Remove the opaque system plate, keep the digits, force them white.
 static void GIBadgeSuppressRedPlate(UIView *view) {
     if (!view) return;
 
@@ -290,9 +84,9 @@ static void GIBadgeSuppressRedPlate(UIView *view) {
                 UILabel *label = (UILabel *)sub;
                 label.textColor = UIColor.whiteColor;
                 label.layer.shadowColor = UIColor.blackColor.CGColor;
-                label.layer.shadowOpacity = 0.30f;
-                label.layer.shadowRadius = 1.2f;
-                label.layer.shadowOffset = CGSizeMake(0.0, 0.5);
+                label.layer.shadowOpacity = 0.42f;
+                label.layer.shadowRadius = 1.6f;
+                label.layer.shadowOffset = CGSizeMake(0.0, 0.6);
             }
             continue;
         }
@@ -306,7 +100,7 @@ static void GIBadgeSuppressRedPlate(UIView *view) {
     }
 }
 
-static UIImage *GIBadgeTile(CGSize size, CGFloat scale, CGImageRef backdrop) {
+static UIImage *GIBadgeTile(CGSize size, CGFloat scale) {
     UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
     format.scale = scale;
     format.opaque = NO;
@@ -316,53 +110,37 @@ static UIImage *GIBadgeTile(CGSize size, CGFloat scale, CGImageRef backdrop) {
     CGFloat sheen = MIN((CGFloat)1.0, gBadgeSheen * master);
     CGFloat rim = MIN((CGFloat)1.0, gBadgeRim * master);
 
-    UIImage *backdropImage = GIBadgeBlurredBackdrop(backdrop);
-
     return [renderer imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
         CGContextRef c = ctx.CGContext;
         CGRect rect = CGRectMake(0, 0, size.width, size.height);
         CGFloat radius = CGRectGetHeight(rect) * 0.5;
         UIBezierPath *shape = [UIBezierPath bezierPathWithRoundedRect:rect cornerRadius:radius];
 
-        CGContextSaveGState(c);
-        [shape addClip];
-
-        if (backdropImage) {
-            // Fallback refraction: the icon artwork under the badge, blurred and
-            // colour-boosted — used only when CABackdropLayer is unavailable.
-            [backdropImage drawInRect:rect];
-        } else if (gBadgeBackdropMode == nil || [gBadgeBackdropMode isEqualToString:@"none"]) {
-            CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
-            CGFloat comps[] = {1.0, 1.0, 1.0, 0.12 * sheen,
-                               1.0, 1.0, 1.0, 0.03 * sheen};
-            CGFloat locs[] = {0.0, 1.0};
-            CGGradientRef grad = CGGradientCreateWithColorComponents(space, comps, locs, 2);
-            CGContextDrawLinearGradient(c, grad, CGPointMake(0, 0), CGPointMake(0, size.height), 0);
-            CGGradientRelease(grad);
-            CGColorSpaceRelease(space);
-        }
-
-        // Adaptive tint (legibility only, very light by default).
+        // Optional whisker of tint. Default 0.02 — effectively transparent.
         if (gBadgeTint > 0.001) {
+            CGContextSaveGState(c);
+            [shape addClip];
             CGContextSetFillColorWithColor(c, [UIColor colorWithWhite:1.0 alpha:gBadgeTint].CGColor);
             CGContextFillRect(c, rect);
+            CGContextRestoreGState(c);
         }
 
-        // Bottom refraction band = glass thickness.
+        // Bottom refraction band: the dark edge that gives glass its thickness.
+        CGContextSaveGState(c);
+        [shape addClip];
         CGColorSpaceRef spaceDark = CGColorSpaceCreateDeviceRGB();
-        CGFloat refractAlpha = MIN((CGFloat)0.65, 0.20 * master * gBadgeRefract);
+        CGFloat refractAlpha = MIN((CGFloat)0.55, 0.18 * master * gBadgeRefract);
         CGFloat compsDark[] = {0.0, 0.0, 0.0, 0.0,
                                0.0, 0.0, 0.0, refractAlpha};
-        CGFloat locsDark[] = {0.50, 1.0};
+        CGFloat locsDark[] = {0.45, 1.0};
         CGGradientRef gradDark = CGGradientCreateWithColorComponents(spaceDark, compsDark, locsDark, 2);
         CGContextDrawLinearGradient(c, gradDark, CGPointMake(0, 0), CGPointMake(0, size.height), 0);
         CGGradientRelease(gradDark);
         CGColorSpaceRelease(spaceDark);
-
         CGContextRestoreGState(c);
 
-        // Lens rim: bright top edge fading down, faint cool tint at the bottom.
-        CGFloat lineWidth = MAX(1.0, MIN(1.7, size.height * 0.06));
+        // Lens rim: bright top, fading down, faint cool bottom (dispersion hint).
+        CGFloat lineWidth = MAX(1.0, MIN(1.8, size.height * 0.065));
         CGRect strokeRect = CGRectInset(rect, lineWidth * 0.5, lineWidth * 0.5);
         UIBezierPath *stroke = [UIBezierPath bezierPathWithRoundedRect:strokeRect
                                                             cornerRadius:MAX(0.0, radius - lineWidth * 0.5)];
@@ -373,8 +151,8 @@ static UIImage *GIBadgeTile(CGSize size, CGFloat scale, CGImageRef backdrop) {
         CGContextClip(c);
         CGColorSpaceRef space2 = CGColorSpaceCreateDeviceRGB();
         CGFloat comps2[] = {1.00, 1.00, 1.00, 1.00 * rim,
-                            1.00, 1.00, 1.00, 0.60 * rim,
-                            0.86, 0.94, 1.00, 0.35 * rim};
+                            1.00, 1.00, 1.00, 0.62 * rim,
+                            0.86, 0.94, 1.00, 0.32 * rim};
         CGFloat locs2[] = {0.0, 0.55, 1.0};
         CGGradientRef grad2 = CGGradientCreateWithColorComponents(space2, comps2, locs2, 3);
         CGContextDrawLinearGradient(c, grad2, CGPointMake(0, 0), CGPointMake(0, size.height), 0);
@@ -382,7 +160,7 @@ static UIImage *GIBadgeTile(CGSize size, CGFloat scale, CGImageRef backdrop) {
         CGColorSpaceRelease(space2);
         CGContextRestoreGState(c);
 
-        // Specular highlight.
+        // Specular highlight: small elliptical glow under the top edge.
         CGContextSaveGState(c);
         [shape addClip];
         CGColorSpaceRef space3 = CGColorSpaceCreateDeviceRGB();
@@ -392,7 +170,7 @@ static UIImage *GIBadgeTile(CGSize size, CGFloat scale, CGImageRef backdrop) {
         CGGradientRef grad3 = CGGradientCreateWithColorComponents(space3, comps3, locs3, 2);
         CGPoint center = CGPointMake(size.width * 0.5, size.height * 0.18);
         CGContextDrawRadialGradient(c, grad3, center, 0.0,
-                                    center, size.width * 0.40,
+                                    center, size.width * 0.38,
                                     kCGGradientDrawsAfterEndLocation);
         CGGradientRelease(grad3);
         CGColorSpaceRelease(space3);
@@ -406,8 +184,6 @@ static void GIBadgeUpdate(UIView *view) {
     CALayer *overlay = objc_getAssociatedObject(view, kBadgeOverlayKey);
     if (!gBadgeEnabled || gBadgeIntensity <= 0.001) {
         if (overlay) [overlay removeFromSuperlayer];
-        UIView *host = objc_getAssociatedObject(view, kBadgeBackdropKey);
-        if (host) { [host removeFromSuperview]; objc_setAssociatedObject(view, kBadgeBackdropKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
         objc_setAssociatedObject(view, kBadgeOverlayKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         return;
     }
@@ -416,38 +192,17 @@ static void GIBadgeUpdate(UIView *view) {
 
     CGFloat scale = view.window ? view.window.screen.scale : UIScreen.mainScreen.scale;
     if (scale <= 0.0) scale = UIScreen.mainScreen.scale;
-
-    // Live render-server backdrop sampling (primary path).
-    UIView *backdropHost = objc_getAssociatedObject(view, kBadgeBackdropKey);
-    if (!backdropHost) {
-        backdropHost = GIBadgeMakeBackdropView(view.bounds.size, scale);
-        if (backdropHost) {
-            objc_setAssociatedObject(view, kBadgeBackdropKey, backdropHost, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            [view insertSubview:backdropHost atIndex:0];
-        }
-    }
-    GIBadgeSyncBackdrop(view, backdropHost, scale);
-
-    // Static Core Image sampling is only the fallback when no backdrop layer.
-    CGImageRef backdrop = NULL;
-    if (!backdropHost) {
-        CGSize backdropPixels = CGSizeZero;
-        backdrop = GIBadgeCropBackdrop(view, &backdropPixels);
-    }
-
-    NSString *signature = GIBadgeSignature(view.bounds.size, scale, backdrop);
+    NSString *signature = GIBadgeSignature(view.bounds.size, scale);
     NSString *last = objc_getAssociatedObject(view, kBadgeSignatureKey);
 
     if (overlay &&
         CGRectEqualToRect(overlay.frame, view.bounds) &&
         [last isEqualToString:signature]) {
         overlay.hidden = NO;
-        if (backdrop) CGImageRelease(backdrop);
         return;
     }
 
-    UIImage *tile = GIBadgeTile(view.bounds.size, scale, backdrop);
-    if (backdrop) CGImageRelease(backdrop);
+    UIImage *tile = GIBadgeTile(view.bounds.size, scale);
     if (!tile) return;
 
     if (!overlay) {
@@ -499,7 +254,6 @@ static void GIBadgeInstall(void) {
             gBadgeOriginalLayout = method_getImplementation(method);
             method_setImplementation(method, replacement);
             gBadgeHookInstalled = YES;
-            GIBadgeLog(@"hooked SBIconBadgeView");
         }
     }
     if (parallaxClass && !gParallaxHookInstalled) {
@@ -510,7 +264,6 @@ static void GIBadgeInstall(void) {
             gParallaxOriginalLayout = method_getImplementation(method);
             method_setImplementation(method, replacement);
             gParallaxHookInstalled = YES;
-            GIBadgeLog(@"hooked SBIconParallaxBadgeView");
         }
     }
 }

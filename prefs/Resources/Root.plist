@@ -228,66 +228,6 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>越大越糊，0 为完全清晰的透镜效果；默认 4。</string>
-			<key>label</key>
-			<string>折射模糊（背景采样半径）</string>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSSliderCell</string>
-			<key>cellClass</key>
-			<string>GISliderCell</string>
-			<key>default</key>
-			<real>4.0</real>
-			<key>defaults</key>
-			<string>com.soren.glassicons</string>
-			<key>height</key>
-			<real>56.0</real>
-			<key>isContinuous</key>
-			<true/>
-			<key>key</key>
-			<string>BadgeBlur</string>
-			<key>max</key>
-			<real>20.0</real>
-			<key>min</key>
-			<real>0.0</real>
-			<key>showValue</key>
-			<false/>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSGroupCell</string>
-			<key>footerText</key>
-			<string>让透出的背景颜色更鲜艳，默认 2.4。</string>
-			<key>label</key>
-			<string>折射饱和（背景色彩强度）</string>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSSliderCell</string>
-			<key>cellClass</key>
-			<string>GISliderCell</string>
-			<key>default</key>
-			<real>2.4</real>
-			<key>defaults</key>
-			<string>com.soren.glassicons</string>
-			<key>height</key>
-			<real>56.0</real>
-			<key>isContinuous</key>
-			<true/>
-			<key>key</key>
-			<string>BadgeSaturation</string>
-			<key>max</key>
-			<real>4.0</real>
-			<key>min</key>
-			<real>0.0</real>
-			<key>showValue</key>
-			<false/>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSGroupCell</string>
-			<key>footerText</key>
 			<string>底部暗边模拟玻璃折射厚度，0 关闭。</string>
 			<key>label</key>
 			<string>折射暗带（底部厚度）</string>
@@ -318,9 +258,9 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>极淡的底色，用于让数字在复杂背景上更清晰；默认 0.03。</string>
+			<string>极淡的白色底，用于在浅色壁纸上保住数字；默认 0.02。</string>
 			<key>label</key>
-			<string>自适应着色（底色）</string>
+			<string>底色（0 = 完全透明）</string>
 		</dict>
 		<dict>
 			<key>cell</key>
