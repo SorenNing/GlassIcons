@@ -7,7 +7,7 @@ include $(THEOS)/makefiles/common.mk
 TWEAK_NAME = GlassIcons
 GlassIcons_FILES = GlassIcons.m BadgeGlass.m
 GlassIcons_CFLAGS = -fobjc-arc -Wall
-GlassIcons_FRAMEWORKS = UIKit Foundation CoreFoundation QuartzCore CoreGraphics
+GlassIcons_FRAMEWORKS = UIKit Foundation CoreFoundation QuartzCore CoreGraphics CoreImage
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 
