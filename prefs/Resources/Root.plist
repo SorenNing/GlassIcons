@@ -2,148 +2,240 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>title</key>
-	<string>GlassIcons</string>
 	<key>items</key>
 	<array>
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
-			<key>label</key>
-			<string>玻璃图标</string>
 			<key>footerText</key>
 			<string>给桌面 App 图标叠加玻璃高光与描边。文件夹不做任何处理。</string>
+			<key>label</key>
+			<string>玻璃图标</string>
 		</dict>
 		<dict>
 			<key>cell</key>
 			<string>PSSwitchCell</string>
-			<key>label</key>
-			<string>启用</string>
+			<key>default</key>
+			<true/>
 			<key>defaults</key>
 			<string>com.soren.glassicons</string>
 			<key>key</key>
 			<string>Enabled</string>
-			<key>default</key>
-			<true/>
+			<key>label</key>
+			<string>启用</string>
 		</dict>
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
-			<key>label</key>
-			<string>整体强度（总开关倍率）</string>
 			<key>footerText</key>
 			<string>所有效果的总倍率。0 等于临时关闭，超过 1 会过曝，可到 5 做夸张效果。</string>
+			<key>label</key>
+			<string>整体强度（总开关倍率）</string>
 		</dict>
 		<dict>
 			<key>cell</key>
 			<string>PSSliderCell</string>
 			<key>cellClass</key>
 			<string>GISliderCell</string>
-			<key>height</key>
-			<real>56.0</real>
+			<key>default</key>
+			<real>0.7</real>
 			<key>defaults</key>
 			<string>com.soren.glassicons</string>
+			<key>height</key>
+			<real>56.0</real>
+			<key>isContinuous</key>
+			<true/>
 			<key>key</key>
 			<string>Intensity</string>
-			<key>default</key>
-			<real>0.7</real>
-			<key>min</key>
-			<real>0.0</real>
 			<key>max</key>
 			<real>5.0</real>
-			<key>isContinuous</key>
-			<true/>
+			<key>min</key>
+			<real>0.0</real>
 			<key>showValue</key>
 			<false/>
 		</dict>
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
-			<key>label</key>
-			<string>高光强度（图标顶部的柔光）</string>
 			<key>footerText</key>
 			<string>过高会让浅色图标顶部发白，建议 0.4–0.7。</string>
+			<key>label</key>
+			<string>高光强度（图标顶部的柔光）</string>
 		</dict>
 		<dict>
 			<key>cell</key>
 			<string>PSSliderCell</string>
 			<key>cellClass</key>
 			<string>GISliderCell</string>
-			<key>height</key>
-			<real>56.0</real>
-			<key>defaults</key>
-			<string>com.soren.glassicons</string>
-			<key>key</key>
-			<string>Sheen</string>
 			<key>default</key>
 			<real>0.6</real>
-			<key>min</key>
-			<real>0.0</real>
-			<key>max</key>
-			<real>5.0</real>
+			<key>defaults</key>
+			<string>com.soren.glassicons</string>
+			<key>height</key>
+			<real>56.0</real>
 			<key>isContinuous</key>
 			<true/>
+			<key>key</key>
+			<string>Sheen</string>
+			<key>max</key>
+			<real>5.0</real>
+			<key>min</key>
+			<real>0.0</real>
 			<key>showValue</key>
 			<false/>
 		</dict>
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
-			<key>label</key>
-			<string>描边强度（边缘亮线）</string>
 			<key>footerText</key>
 			<string>图标轮廓的细亮线，建议 0.5–0.8。</string>
+			<key>label</key>
+			<string>描边强度（边缘亮线）</string>
 		</dict>
 		<dict>
 			<key>cell</key>
 			<string>PSSliderCell</string>
 			<key>cellClass</key>
 			<string>GISliderCell</string>
-			<key>height</key>
-			<real>56.0</real>
-			<key>defaults</key>
-			<string>com.soren.glassicons</string>
-			<key>key</key>
-			<string>Rim</string>
 			<key>default</key>
 			<real>0.7</real>
-			<key>min</key>
-			<real>0.0</real>
-			<key>max</key>
-			<real>5.0</real>
+			<key>defaults</key>
+			<string>com.soren.glassicons</string>
+			<key>height</key>
+			<real>56.0</real>
 			<key>isContinuous</key>
 			<true/>
+			<key>key</key>
+			<string>Rim</string>
+			<key>max</key>
+			<real>5.0</real>
+			<key>min</key>
+			<real>0.0</real>
 			<key>showValue</key>
 			<false/>
 		</dict>
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
-			<key>label</key>
-			<string>通知角标</string>
 			<key>footerText</key>
 			<string>给角标气泡加玻璃质感（磨砂底+描边+顶部柔光），数字保持原样。</string>
+			<key>label</key>
+			<string>通知角标</string>
 		</dict>
 		<dict>
 			<key>cell</key>
 			<string>PSSwitchCell</string>
-			<key>label</key>
-			<string>角标玻璃</string>
+			<key>default</key>
+			<true/>
 			<key>defaults</key>
 			<string>com.soren.glassicons</string>
 			<key>key</key>
 			<string>BadgeGlass</string>
-			<key>default</key>
-			<true/>
+			<key>label</key>
+			<string>角标玻璃</string>
 		</dict>
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>角标的总体倍率，0 等于关闭。</string>
+			<key>label</key>
+			<string>角标整体强度</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSliderCell</string>
+			<key>cellClass</key>
+			<string>GISliderCell</string>
+			<key>default</key>
+			<real>0.9</real>
+			<key>defaults</key>
+			<string>com.soren.glassicons</string>
+			<key>height</key>
+			<real>56.0</real>
+			<key>isContinuous</key>
+			<true/>
+			<key>key</key>
+			<string>BadgeIntensity</string>
+			<key>max</key>
+			<real>5.0</real>
+			<key>min</key>
+			<real>0.0</real>
+			<key>showValue</key>
+			<false/>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>顶部镜面高光的强度。</string>
+			<key>label</key>
+			<string>角标高光</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSliderCell</string>
+			<key>cellClass</key>
+			<string>GISliderCell</string>
+			<key>default</key>
+			<real>0.75</real>
+			<key>defaults</key>
+			<string>com.soren.glassicons</string>
+			<key>height</key>
+			<real>56.0</real>
+			<key>isContinuous</key>
+			<true/>
+			<key>key</key>
+			<string>BadgeSheen</string>
+			<key>max</key>
+			<real>5.0</real>
+			<key>min</key>
+			<real>0.0</real>
+			<key>showValue</key>
+			<false/>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>边缘亮线的强度。</string>
+			<key>label</key>
+			<string>角标描边</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSliderCell</string>
+			<key>cellClass</key>
+			<string>GISliderCell</string>
+			<key>default</key>
+			<real>0.8</real>
+			<key>defaults</key>
+			<string>com.soren.glassicons</string>
+			<key>height</key>
+			<real>56.0</real>
+			<key>isContinuous</key>
+			<true/>
+			<key>key</key>
+			<string>BadgeRim</string>
+			<key>max</key>
+			<real>5.0</real>
+			<key>min</key>
+			<real>0.0</real>
+			<key>showValue</key>
+			<false/>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>GlassIcons
+作者: Ning
+调整后回到桌面立即生效，无需注销。</string>
 			<key>label</key>
 			<string>关于</string>
-			<key>footerText</key>
-			<string>GlassIcons&#10;作者: Ning&#10;调整后回到桌面立即生效，无需注销。</string>
 		</dict>
 	</array>
+	<key>title</key>
+	<string>GlassIcons</string>
 </dict>
 </plist>
