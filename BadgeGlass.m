@@ -80,14 +80,13 @@ static void GIBadgeSuppressRedPlate(UIView *view) {
                       [name rangeOfString:@"Label"].location != NSNotFound ||
                       [name rangeOfString:@"Text"].location != NSNotFound;
         if (isText) {
-            if ([sub isKindOfClass:UILabel.class]) {
-                UILabel *label = (UILabel *)sub;
-                label.textColor = UIColor.whiteColor;
-                label.layer.shadowColor = UIColor.blackColor.CGColor;
-                label.layer.shadowOpacity = 0.42f;
-                label.layer.shadowRadius = 1.6f;
-                label.layer.shadowOffset = CGSizeMake(0.0, 0.6);
+            if ([sub respondsToSelector:@selector(setTextColor:)]) {
+                [(id)sub setTextColor:UIColor.whiteColor];
             }
+            sub.layer.shadowColor = UIColor.blackColor.CGColor;
+            sub.layer.shadowOpacity = 0.42f;
+            sub.layer.shadowRadius = 1.4f;
+            sub.layer.shadowOffset = CGSizeMake(0.0, 0.5);
             continue;
         }
 
@@ -107,7 +106,6 @@ static UIImage *GIBadgeTile(CGSize size, CGFloat scale) {
     UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:size format:format];
 
     CGFloat master = MIN((CGFloat)2.0, gBadgeIntensity);
-    CGFloat sheen = MIN((CGFloat)1.0, gBadgeSheen * master);
     CGFloat rim = MIN((CGFloat)1.0, gBadgeRim * master);
 
     return [renderer imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
@@ -140,7 +138,7 @@ static UIImage *GIBadgeTile(CGSize size, CGFloat scale) {
         CGContextRestoreGState(c);
 
         // Lens rim: bright top, fading down, faint cool bottom (dispersion hint).
-        CGFloat lineWidth = MAX(1.0, MIN(1.8, size.height * 0.065));
+        CGFloat lineWidth = MAX(0.6, MIN(1.0, size.height * 0.030));
         CGRect strokeRect = CGRectInset(rect, lineWidth * 0.5, lineWidth * 0.5);
         UIBezierPath *stroke = [UIBezierPath bezierPathWithRoundedRect:strokeRect
                                                             cornerRadius:MAX(0.0, radius - lineWidth * 0.5)];
@@ -160,21 +158,6 @@ static UIImage *GIBadgeTile(CGSize size, CGFloat scale) {
         CGColorSpaceRelease(space2);
         CGContextRestoreGState(c);
 
-        // Specular highlight: small elliptical glow under the top edge.
-        CGContextSaveGState(c);
-        [shape addClip];
-        CGColorSpaceRef space3 = CGColorSpaceCreateDeviceRGB();
-        CGFloat comps3[] = {1.0, 1.0, 1.0, 0.55 * sheen,
-                            1.0, 1.0, 1.0, 0.0};
-        CGFloat locs3[] = {0.0, 1.0};
-        CGGradientRef grad3 = CGGradientCreateWithColorComponents(space3, comps3, locs3, 2);
-        CGPoint center = CGPointMake(size.width * 0.5, size.height * 0.18);
-        CGContextDrawRadialGradient(c, grad3, center, 0.0,
-                                    center, size.width * 0.38,
-                                    kCGGradientDrawsAfterEndLocation);
-        CGGradientRelease(grad3);
-        CGColorSpaceRelease(space3);
-        CGContextRestoreGState(c);
     }];
 }
 

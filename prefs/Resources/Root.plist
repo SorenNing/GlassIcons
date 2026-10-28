@@ -168,36 +168,6 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>顶部椭圆镜面高光的强度。</string>
-			<key>label</key>
-			<string>镜面高光（顶部反光）</string>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSSliderCell</string>
-			<key>cellClass</key>
-			<string>GISliderCell</string>
-			<key>default</key>
-			<real>0.75</real>
-			<key>defaults</key>
-			<string>com.soren.glassicons</string>
-			<key>height</key>
-			<real>56.0</real>
-			<key>isContinuous</key>
-			<true/>
-			<key>key</key>
-			<string>BadgeSheen</string>
-			<key>max</key>
-			<real>5.0</real>
-			<key>min</key>
-			<real>0.0</real>
-			<key>showValue</key>
-			<false/>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSGroupCell</string>
-			<key>footerText</key>
 			<string>玻璃边缘的方向性亮线，上亮下暗。</string>
 			<key>label</key>
 			<string>边缘光（SDF 亮线）</string>
