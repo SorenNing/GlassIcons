@@ -382,7 +382,11 @@ static void GIIconPackReload(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         GIIconPackEnsureDirectory();
         NSUInteger count = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:kIconPackDir error:NULL].count;
-        gIconPackEnabled = count > 0;
+        CFPropertyListRef enabledRef = CFPreferencesCopyAppValue(CFSTR("IconPackEnabled"), kGlassDomain);
+        BOOL userEnabled = enabledRef ? (CFGetTypeID(enabledRef) == CFBooleanGetTypeID()
+                                          ? CFBooleanGetValue((CFBooleanRef)enabledRef) : YES) : YES;
+        if (enabledRef) CFRelease(enabledRef);
+        gIconPackEnabled = userEnabled && count > 0;
         if (gIconPackEnabled) GIInstallCacheHooks();
         [gIconPackCache removeAllObjects];
         for (UIView *view in [gTrackedViews allObjects]) {
@@ -659,8 +663,13 @@ __attribute__((constructor)) static void GIInitialize(void) {
     GIIconPackEnsureDirectory();
     NSUInteger packCount = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:kIconPackDir
                                     error:NULL].count;
-    gIconPackEnabled = packCount > 0;
-    GILogMain(@"init: iconpack dir contents = %lu (enabled=%d)", (unsigned long)packCount, gIconPackEnabled);
+    CFPropertyListRef enabledRef = CFPreferencesCopyAppValue(CFSTR("IconPackEnabled"), kGlassDomain);
+    BOOL userEnabled = enabledRef ? (CFGetTypeID(enabledRef) == CFBooleanGetTypeID()
+                                      ? CFBooleanGetValue((CFBooleanRef)enabledRef) : YES) : YES;
+    if (enabledRef) CFRelease(enabledRef);
+    gIconPackEnabled = userEnabled && packCount > 0;
+    GILogMain(@"init: iconpack dir contents = %lu (userEnabled=%d, enabled=%d)",
+              (unsigned long)packCount, userEnabled, gIconPackEnabled);
     if (gIconPackEnabled) {
         // Cache-layer hooks must install early, before the icon image caches fill.
         dispatch_async(dispatch_get_main_queue(), ^{ GIInstallCacheHooks(); });

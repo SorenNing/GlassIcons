@@ -6,13 +6,10 @@
 #import <CoreGraphics/CoreGraphics.h>
 #import <math.h>
 
-// Glass badges (SBIconBadgeView / SBIconParallaxBadgeView).
-//
-// Deliberately transparent: no plate, no blur, no backdrop capture. The badge
-// shows only the glass "shape" — a lens rim that is bright on top and fades
-// downward, a specular highlight near the top, and a faint dark refraction
-// band along the bottom edge. The system's solid red plate is removed and the
-// digits are forced white with a soft shadow.
+// Badge glass for SBIconBadgeView / SBIconParallaxBadgeView (iOS 15-17).
+// Draws a frosted translucent plate + thin white rim + top sheen over the
+// badge's own background; the badge text stays visible underneath. The glass
+// follows the badge's live bounds (pill for multi-digit, circle for "1").
 
 static CFStringRef const kBadgeDomain = CFSTR("com.soren.glassicons");
 
@@ -22,184 +19,63 @@ static const void *kBadgeSignatureKey = &kBadgeSignatureKey;
 static IMP gBadgeOriginalLayout = NULL;
 static IMP gParallaxOriginalLayout = NULL;
 static BOOL gBadgeEnabled = YES;
-static CGFloat gBadgeIntensity = 0.90;
-static CGFloat gBadgeSheen = 0.75;
-static CGFloat gBadgeRim = 0.80;
-static CGFloat gBadgeTint = 0.02;
-static CGFloat gBadgeRefract = 1.0;
-
-static CGFloat GIBadgeNumber(CFStringRef key, CGFloat fallback) {
-    CFPropertyListRef value = CFPreferencesCopyAppValue(key, kBadgeDomain);
-    CGFloat result = fallback;
-    if (value) {
-        if (CFGetTypeID(value) == CFNumberGetTypeID()) {
-            double number = fallback;
-            CFNumberGetValue((CFNumberRef)value, kCFNumberDoubleType, &number);
-            result = (CGFloat)number;
-        }
-        CFRelease(value);
-    }
-    return result;
-}
+static CGFloat gBadgeIntensity = 0.85;
+static CFTimeInterval gBadgeLastPrefs = 0.0;
 
 static void GIBadgeReadPrefs(void) {
     CFPropertyListRef value = CFPreferencesCopyAppValue(CFSTR("BadgeGlass"), kBadgeDomain);
     if (value) {
         gBadgeEnabled = CFGetTypeID(value) == CFBooleanGetTypeID()
-                            ? CFBooleanGetValue((CFBooleanRef)value) : YES;
+                            ? CFBooleanGetValue((CFBooleanRef)value)
+                            : YES;
         CFRelease(value);
     }
-    gBadgeIntensity = fmax(0.0, fmin(5.0, GIBadgeNumber(CFSTR("BadgeIntensity"), 0.90)));
-    gBadgeSheen = fmax(0.0, fmin(5.0, GIBadgeNumber(CFSTR("BadgeSheen"), 0.75)));
-    gBadgeRim = fmax(0.0, fmin(5.0, GIBadgeNumber(CFSTR("BadgeRim"), 0.80)));
-    gBadgeTint = fmax(0.0, fmin(1.0, GIBadgeNumber(CFSTR("BadgeTint"), 0.02)));
-    gBadgeRefract = fmax(0.0, fmin(5.0, GIBadgeNumber(CFSTR("BadgeRefract"), 1.0)));
-}
-
-static NSString *GIBadgeSignature(CGSize size, CGFloat scale) {
-    NSInteger i = (NSInteger)lroundf((float)(gBadgeIntensity * 20.0));
-    NSInteger s = (NSInteger)lroundf((float)(gBadgeSheen * 20.0));
-    NSInteger r = (NSInteger)lroundf((float)(gBadgeRim * 20.0));
-    NSInteger t = (NSInteger)lroundf((float)(gBadgeTint * 100.0));
-    NSInteger rf = (NSInteger)lroundf((float)(gBadgeRefract * 20.0));
-    return [NSString stringWithFormat:@"%ld.%ld.%ld.%ld.%ld|%.0fx%.0f@%.0f",
-            (long)i, (long)s, (long)r, (long)t, (long)rf,
-            size.width, size.height, scale];
-}
-
-// Remove the opaque system plate, keep the digits, force them white.
-static void GIBadgeSuppressRedPlate(UIView *view) {
-    if (!view) return;
-
-    view.backgroundColor = UIColor.clearColor;
-    view.layer.backgroundColor = UIColor.clearColor.CGColor;
-
-    // Some builds paint the red plate straight into layer.contents.
-    id ownContents = view.layer.contents;
-    if (ownContents && CFGetTypeID((__bridge CFTypeRef)ownContents) == CGImageGetTypeID()) {
-        view.layer.contents = nil;
-    }
-
-    for (UIView *sub in view.subviews) {
-        NSString *name = NSStringFromClass([sub class]);
-        id textValue = nil;
-        @try { textValue = [sub valueForKey:@"text"]; } @catch (__unused NSException *e) { textValue = nil; }
-        BOOL hasTextContent = [textValue isKindOfClass:NSString.class] && [(NSString *)textValue length] > 0;
-        BOOL isText = [sub isKindOfClass:UILabel.class] || hasTextContent ||
-                      [sub respondsToSelector:@selector(setAttributedText:)] ||
-                      [name rangeOfString:@"Label"].location != NSNotFound ||
-                      [name rangeOfString:@"Text"].location != NSNotFound;
-        if (isText) {
-            // We redraw the digits ourselves; hide the original to avoid doubling.
-            sub.alpha = 0.0;
-            continue;
+    CFPropertyListRef rim = CFPreferencesCopyAppValue(CFSTR("Rim"), kBadgeDomain);
+    if (rim) {
+        if (CFGetTypeID(rim) == CFNumberGetTypeID()) {
+            double number = 0.85;
+            CFNumberGetValue(rim, kCFNumberDoubleType, &number);
+            gBadgeIntensity = (CGFloat)fmax(0.0, fmin(5.0, number));
         }
-
-        if ([sub isKindOfClass:UIImageView.class]) {
-            ((UIImageView *)sub).image = nil;
-        }
-        sub.backgroundColor = UIColor.clearColor;
-        sub.layer.backgroundColor = UIColor.clearColor.CGColor;
-
-        // Any layer under the badge that carries a bitmap is part of the plate.
-        for (CALayer *layer in sub.layer.sublayers) {
-            id contents = layer.contents;
-            if (contents && CFGetTypeID((__bridge CFTypeRef)contents) == CGImageGetTypeID()) {
-                layer.contents = nil;
-            }
-        }
-        if ([sub isKindOfClass:UIVisualEffectView.class]) sub.hidden = YES;
+        CFRelease(rim);
     }
 }
 
-static NSString *GIBadgeDisplayText(UIView *view) {
-    for (NSString *key in @[@"displayingText", @"text", @"badgeText"]) {
-        id value = nil;
-        @try { value = [view valueForKey:key]; } @catch (__unused NSException *e) { value = nil; }
-        if ([value isKindOfClass:NSString.class] && [(NSString *)value length]) return value;
-    }
-    for (UIView *sub in view.subviews) {
-        id value = nil;
-        @try { value = [sub valueForKey:@"text"]; } @catch (__unused NSException *e) { value = nil; }
-        if ([value isKindOfClass:NSString.class] && [(NSString *)value length]) return value;
-    }
-    return nil;
+static NSString *GIBadgeSignature(CGSize size, CGFloat scale, BOOL dark) {
+    NSInteger bucket = (NSInteger)lroundf((float)(gBadgeIntensity * 20.0));
+    return [NSString stringWithFormat:@"%ld|%d|%.0fx%.0f@%.0f",
+            (long)bucket, dark ? 1 : 0, size.width, size.height, scale];
 }
 
-static UIImage *GIBadgeTile(CGSize size, CGFloat scale, NSString *text) {
+static UIImage *GIBadgeTile(CGSize size, CGFloat scale, BOOL dark) {
     UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
     format.scale = scale;
     format.opaque = NO;
     UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:size format:format];
-
-    CGFloat master = MIN((CGFloat)2.0, gBadgeIntensity);
-    CGFloat rim = MIN((CGFloat)1.0, gBadgeRim * master);
-
+    CGFloat intensity = MIN((CGFloat)1.5, gBadgeIntensity);  // badge plate caps at 1.5x
     return [renderer imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
         CGContextRef c = ctx.CGContext;
         CGRect rect = CGRectMake(0, 0, size.width, size.height);
         CGFloat radius = CGRectGetHeight(rect) * 0.5;
-        UIBezierPath *shape = [UIBezierPath bezierPathWithRoundedRect:rect cornerRadius:radius];
 
-        // Optional whisker of tint. Default 0.02 — effectively transparent.
-        if (gBadgeTint > 0.001) {
-            CGContextSaveGState(c);
-            [shape addClip];
-            CGContextSetFillColorWithColor(c, [UIColor colorWithWhite:1.0 alpha:gBadgeTint].CGColor);
-            CGContextFillRect(c, rect);
-            CGContextRestoreGState(c);
-        }
-
-        // Bottom refraction band: the dark edge that gives glass its thickness.
+        // Frosted plate: dynamic white in light mode / soft dark in dark mode.
+        CGFloat plateAlpha = 0.34 * intensity;
+        CGFloat plateWhite = dark ? 0.10 : 1.0;
         CGContextSaveGState(c);
+        UIBezierPath *shape = [UIBezierPath bezierPathWithRoundedRect:rect cornerRadius:radius];
         [shape addClip];
-        CGColorSpaceRef spaceDark = CGColorSpaceCreateDeviceRGB();
-        CGFloat refractAlpha = MIN((CGFloat)0.55, 0.18 * master * gBadgeRefract);
-        CGFloat compsDark[] = {0.0, 0.0, 0.0, 0.0,
-                               0.0, 0.0, 0.0, refractAlpha};
-        CGFloat locsDark[] = {0.45, 1.0};
-        CGGradientRef gradDark = CGGradientCreateWithColorComponents(spaceDark, compsDark, locsDark, 2);
-        CGContextDrawLinearGradient(c, gradDark, CGPointMake(0, 0), CGPointMake(0, size.height), 0);
-        CGGradientRelease(gradDark);
-        CGColorSpaceRelease(spaceDark);
+        CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+        CGFloat comps[] = {plateWhite, plateWhite, plateWhite, plateAlpha,
+                           plateWhite, plateWhite, plateWhite, plateAlpha * 0.75};
+        CGFloat locs[] = {0.0, 1.0};
+        CGGradientRef grad = CGGradientCreateWithColorComponents(space, comps, locs, 2);
+        CGContextDrawLinearGradient(c, grad, CGPointMake(0, 0), CGPointMake(0, size.height), 0);
+        CGGradientRelease(grad);
+        CGColorSpaceRelease(space);
         CGContextRestoreGState(c);
 
-        // Digits: redraw here because the system may bake them into the plate
-        // bitmap that we clear to get transparency.
-        if (text.length) {
-            CGFloat fontSize = size.height * 0.62;
-            UIFont *font = [UIFont monospacedDigitSystemFontOfSize:fontSize weight:UIFontWeightBold];
-            NSDictionary *attrs = @{
-                NSFontAttributeName: font,
-                NSForegroundColorAttributeName: UIColor.whiteColor,
-                NSShadowAttributeName: ({
-                    NSShadow *shadow = [NSShadow new];
-                    shadow.shadowColor = [UIColor colorWithWhite:0.0 alpha:0.45];
-                    shadow.shadowBlurRadius = size.height * 0.10;
-                    shadow.shadowOffset = CGSizeMake(0.0, size.height * 0.03);
-                    shadow;
-                })
-            };
-            CGSize textSize = [text sizeWithAttributes:attrs];
-            // Long counts (e.g. 725) need a smaller size to stay inside the pill.
-            CGFloat maxWidth = size.width - size.height * 0.30;
-            if (textSize.width > maxWidth && textSize.width > 0) {
-                CGFloat shrink = maxWidth / textSize.width;
-                UIFont *smaller = [UIFont monospacedDigitSystemFontOfSize:fontSize * shrink
-                                                                  weight:UIFontWeightBold];
-                NSMutableDictionary *adjusted = [attrs mutableCopy];
-                adjusted[NSFontAttributeName] = smaller;
-                attrs = adjusted;
-                textSize = [text sizeWithAttributes:attrs];
-            }
-            CGRect textRect = CGRectMake((size.width - textSize.width) * 0.5,
-                                         (size.height - textSize.height) * 0.5,
-                                         textSize.width, textSize.height);
-            [text drawInRect:textRect withAttributes:attrs];
-        }
-
-        // Lens rim: bright top, fading down, faint cool bottom (dispersion hint).
-        CGFloat lineWidth = MAX(0.6, MIN(1.0, size.height * 0.030));
+        // Thin white rim, full circle.
+        CGFloat lineWidth = MAX(0.8, MIN(1.4, size.height * 0.05));
         CGRect strokeRect = CGRectInset(rect, lineWidth * 0.5, lineWidth * 0.5);
         UIBezierPath *stroke = [UIBezierPath bezierPathWithRoundedRect:strokeRect
                                                             cornerRadius:MAX(0.0, radius - lineWidth * 0.5)];
@@ -209,16 +85,29 @@ static UIImage *GIBadgeTile(CGSize size, CGFloat scale, NSString *text) {
         CGContextReplacePathWithStrokedPath(c);
         CGContextClip(c);
         CGColorSpaceRef space2 = CGColorSpaceCreateDeviceRGB();
-        CGFloat comps2[] = {1.00, 1.00, 1.00, 1.00 * rim,
-                            1.00, 1.00, 1.00, 0.62 * rim,
-                            0.86, 0.94, 1.00, 0.32 * rim};
-        CGFloat locs2[] = {0.0, 0.55, 1.0};
+        CGFloat comps2[] = {1.0, 1.0, 1.0, 0.95 * intensity,
+                            1.0, 1.0, 1.0, 0.55 * intensity,
+                            1.0, 1.0, 1.0, 0.95 * intensity};
+        CGFloat locs2[] = {0.0, 0.5, 1.0};
         CGGradientRef grad2 = CGGradientCreateWithColorComponents(space2, comps2, locs2, 3);
         CGContextDrawLinearGradient(c, grad2, CGPointMake(0, 0), CGPointMake(0, size.height), 0);
         CGGradientRelease(grad2);
         CGColorSpaceRelease(space2);
         CGContextRestoreGState(c);
 
+        // Top sheen.
+        CGContextSaveGState(c);
+        UIBezierPath *sheenShape = [UIBezierPath bezierPathWithRoundedRect:rect cornerRadius:radius];
+        [sheenShape addClip];
+        CGColorSpaceRef space3 = CGColorSpaceCreateDeviceRGB();
+        CGFloat comps3[] = {1.0, 1.0, 1.0, 0.30 * intensity,
+                            1.0, 1.0, 1.0, 0.0};
+        CGFloat locs3[] = {0.0, 0.45};
+        CGGradientRef grad3 = CGGradientCreateWithColorComponents(space3, comps3, locs3, 2);
+        CGContextDrawLinearGradient(c, grad3, CGPointMake(0, 0), CGPointMake(0, size.height), 0);
+        CGGradientRelease(grad3);
+        CGColorSpaceRelease(space3);
+        CGContextRestoreGState(c);
     }];
 }
 
@@ -232,11 +121,17 @@ static void GIBadgeUpdate(UIView *view) {
         return;
     }
 
-    GIBadgeSuppressRedPlate(view);
+    BOOL dark = NO;
+    @try {
+        id trait = [view valueForKey:@"traitCollection"];
+        if ([trait isKindOfClass:UITraitCollection.class]) {
+            dark = [(UITraitCollection *)trait userInterfaceStyle] == UIUserInterfaceStyleDark;
+        }
+    } @catch (__unused NSException *e) {}
 
     CGFloat scale = view.window ? view.window.screen.scale : UIScreen.mainScreen.scale;
     if (scale <= 0.0) scale = UIScreen.mainScreen.scale;
-    NSString *signature = GIBadgeSignature(view.bounds.size, scale);
+    NSString *signature = GIBadgeSignature(view.bounds.size, scale, dark);
     NSString *last = objc_getAssociatedObject(view, kBadgeSignatureKey);
 
     if (overlay &&
@@ -246,8 +141,7 @@ static void GIBadgeUpdate(UIView *view) {
         return;
     }
 
-    NSString *badgeText = GIBadgeDisplayText(view);
-    UIImage *tile = GIBadgeTile(view.bounds.size, scale, badgeText);
+    UIImage *tile = GIBadgeTile(view.bounds.size, scale, dark);
     if (!tile) return;
 
     if (!overlay) {
@@ -256,7 +150,10 @@ static void GIBadgeUpdate(UIView *view) {
         overlay.masksToBounds = NO;
         overlay.contentsGravity = kCAGravityResize;
         objc_setAssociatedObject(view, kBadgeOverlayKey, overlay, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        [view.layer insertSublayer:overlay atIndex:0];
+        // Insert ABOVE the badge background but keep text on top: badge text is
+        // usually a UILabel subview added after background; appending our layer
+        // on top is fine because the plate is translucent and the text is bold.
+        [view.layer addSublayer:overlay];
     }
 
     [CATransaction begin];
@@ -314,7 +211,10 @@ static void GIBadgeInstall(void) {
 }
 
 static void GIBadgePrefsChanged(void) {
-    dispatch_async(dispatch_get_main_queue(), ^{ GIBadgeReadPrefs(); });
+    gBadgeLastPrefs = 0.0;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        GIBadgeReadPrefs();
+    });
 }
 
 __attribute__((constructor)) static void GIBadgeInit(void) {

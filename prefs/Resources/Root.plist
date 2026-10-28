@@ -258,9 +258,21 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>把 PNG 放进 /var/mobile/Library/GlassIcons/Icons/，文件名用 App 的 Bundle ID，例如 com.tencent.xin.png（可加 @2x/@3x）。放好后点下面的按钮。</string>
+			<string>把 PNG 放进 /var/mobile/Library/GlassIcons/Icons/，文件名用 App 的 Bundle ID，例如 com.tencent.xin.png（可加 @2x/@3x）。开关打开后生效，关闭恢复系统图标。</string>
 			<key>label</key>
 			<string>桌面图标包</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.soren.glassicons</string>
+			<key>key</key>
+			<string>IconPackEnabled</string>
+			<key>label</key>
+			<string>启用图标替换</string>
 		</dict>
 		<dict>
 			<key>action</key>
