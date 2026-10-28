@@ -18,6 +18,5 @@ Manual build on macOS: `make clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=r
 
 ## Status
 
-- arm64e object compiles clean locally (clang 19 + iPhoneOS16.5 SDK, `-fsyntax-only` clean).
-- Runtime on device NOT yet verified.
-
+Final form: app icons get the glass rim + sheen; folders are untouched entirely.
+Version scheme resets to 0.1 as the stable baseline.
