@@ -69,21 +69,9 @@ static void GIReloadPreferencesIfNeeded(void) {
     GIReadPreferences();
 }
 
-// Closed folder icons get glass; the open folder panel and icons inside it
-// do not. Detection:
-//  - FolderIcon view stretched into the panel (transform scale / big width)
-//    is handled in GIUpdateOverlay (hidden while open).
-//  - Icons inside an open folder sit under the panel container. Match ONLY the
-//    exact class "SBFolderView" — never prefix matching: the home screen
-//    hierarchy itself contains SBFolder-prefixed views (0.9.0 regression).
-static BOOL GIAncestorIsOpenFolderPanel(UIView *view) {
-    UIView *parent = view.superview;
-    for (int depth = 0; depth < 8 && parent; depth++, parent = parent.superview) {
-        if ([NSStringFromClass([parent class]) isEqualToString:@"SBFolderView"]) return YES;
-    }
-    return NO;
-}
-
+// Folders: the icon layer does NOT draw on folder icon views at all (0.9.x
+// lessons). Instead, the OPEN folder panel (SBFolderView) gets its own glass
+// rim drawn by GIPanelDelegate below — a separate view, no icon surgery.
 static BOOL GIShouldSkipView(UIView *view) {
     if (!view) return YES;
     CGFloat side = MIN(CGRectGetWidth(view.bounds), CGRectGetHeight(view.bounds));
@@ -92,11 +80,10 @@ static BOOL GIShouldSkipView(UIView *view) {
     @try {
         id icon = [view valueForKey:@"icon"];
         if (icon && [NSStringFromClass([icon class]) rangeOfString:@"FolderIcon"].location != NSNotFound) {
-            return NO;  // closed icon draws; open state handled in GIUpdateOverlay
+            return YES;
         }
     } @catch (__unused NSException *e) {}
 
-    if (GIAncestorIsOpenFolderPanel(view)) return YES;
     return NO;
 }
 
@@ -242,50 +229,12 @@ static void GIUpdateOverlay(UIView *view) {
     CGRect bounds = view.bounds;
     CGFloat factor = GIStrengthForView(view);
     CGFloat intensity = gIntensity;
-
-    // Closed folder icon: draw on the square icon area (60pt, top-aligned)
-    // so the glass tile matches app-icon size. Open (stretched) folder icon:
-    // hide the overlay entirely — no flash ring, and nothing behind the panel.
-    BOOL isFolderIcon = NO;
-    BOOL folderOpen = NO;
-    @try {
-        id icon = [view valueForKey:@"icon"];
-        isFolderIcon = icon && [NSStringFromClass([icon class]) rangeOfString:@"FolderIcon"].location != NSNotFound;
-    } @catch (__unused NSException *e) {}
-
-    if (isFolderIcon) {
-        CGAffineTransform t = view.transform;
-        CGFloat scale = (CGFloat)fabs(sqrt(t.a * t.a + t.b * t.b));
-        BOOL stretched = scale > (CGFloat)1.10 || CGRectGetWidth(bounds) > (CGFloat)90.0;
-        folderOpen = stretched || GIAncestorIsOpenFolderPanel(view);
-        if (folderOpen) {
-            if (overlay) {
-                [CATransaction begin];
-                [CATransaction setDisableActions:YES];
-                overlay.hidden = YES;
-                [CATransaction commit];
-            }
-            return;
-        }
-        CGFloat side = MIN(CGRectGetWidth(bounds), CGRectGetHeight(bounds));
-        side = MIN(side, 60.0);
-        bounds = CGRectMake(CGRectGetMidX(bounds) - side * 0.5,
-                            CGRectGetMinY(bounds),
-                            side, side);
-    }
-
     NSString *signature = GISettingsSignature(factor);
     NSString *lastSignature = objc_getAssociatedObject(view, kGlassSignatureKey);
 
     if (overlay &&
         CGRectEqualToRect(overlay.frame, bounds) &&
         [lastSignature isEqualToString:signature]) {
-        if (isFolderIcon && overlay.hidden) {
-            [CATransaction begin];
-            [CATransaction setDisableActions:YES];
-            overlay.hidden = NO;  // folder closed again: restore the glass
-            [CATransaction commit];
-        }
         return;  // nothing changed: no layout work at all
     }
 
