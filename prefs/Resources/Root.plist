@@ -126,7 +126,7 @@
 		</dict>
 		<dict>
 			<key>cell</key>
-			<string>PSSwitchCell</key>
+			<string>PSSwitchCell</string>
 			<key>label</key>
 			<string>角标玻璃</string>
 			<key>defaults</key>
