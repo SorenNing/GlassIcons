@@ -341,6 +341,38 @@ static UIImage *GIIconPackImageForBundleID(NSString *bundleID) {
 
 static void GIUpdateOverlay(UIView *view);
 
+#pragma mark - Whole-tree scan
+
+// Icons only reach us through -layoutSubviews, and a settled home screen does
+// not lay out again — so most icons never get processed. Walk the window tree
+// and apply to every icon image view we can find.
+static void GIWalkForIcons(UIView *view, int depth, NSUInteger *touched) {
+    if (!view || depth > 30) return;
+    NSString *name = NSStringFromClass([view class]);
+    if ([name containsString:@"SBIconImageView"] || [name hasPrefix:@"SBIconImage"]) {
+        @try { GIUpdateOverlay(view); } @catch (__unused NSException *e) {}
+        if (touched) (*touched)++;
+    }
+    for (UIView *child in view.subviews) {
+        GIWalkForIcons(child, depth + 1, touched);
+    }
+}
+
+static void GIScanAllIcons(void) {
+    static CFTimeInterval lastScan = 0.0;
+    CFTimeInterval now = CACurrentMediaTime();
+    if (now - lastScan < 0.4) return;
+    lastScan = now;
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSUInteger touched = 0;
+        for (UIWindow *window in UIApplication.sharedApplication.windows) {
+            GIWalkForIcons(window, 0, &touched);
+        }
+        GILogMain(@"scan: visited %lu icon views", (unsigned long)touched);
+    });
+}
+
 static void GIIconPackReload(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         [gIconPackCache removeAllObjects];
@@ -348,6 +380,7 @@ static void GIIconPackReload(void) {
             objc_setAssociatedObject(view, kIconPackSignatureKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             @try { GIUpdateOverlay(view); } @catch (__unused NSException *e) {}
         }
+        GIScanAllIcons();
     });
 }
 
@@ -541,6 +574,7 @@ static void GIPreferencesChanged(CFNotificationCenterRef center __unused, void *
             objc_setAssociatedObject(view, kGlassSignatureKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             @try { GIUpdateOverlay(view); } @catch (__unused NSException *e) {}
         }
+        GIScanAllIcons();
     });
 }
 
@@ -561,4 +595,10 @@ __attribute__((constructor)) static void GIInitialize(void) {
                                    (CFNotificationCallback)GIIconPackChanged,
                                    CFSTR("com.soren.glassicons.iconpack"), NULL,
                                    CFNotificationSuspensionBehaviorDeliverImmediately);
+
+    // Home screen icons settle without further layout passes: scan a few times.
+    for (NSNumber *delay in @[@2.0, @4.0, @7.0, @12.0]) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ GIScanAllIcons(); });
+    }
 }
