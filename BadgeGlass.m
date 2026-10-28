@@ -15,6 +15,8 @@ static CFStringRef const kBadgeDomain = CFSTR("com.soren.glassicons");
 
 static const void *kBadgeOverlayKey = &kBadgeOverlayKey;
 static const void *kBadgeSignatureKey = &kBadgeSignatureKey;
+static const void *kBadgeBlurKey = &kBadgeBlurKey;
+static const NSInteger kBadgeBlurTag = 90001;
 
 static IMP gBadgeOriginalLayout = NULL;
 static IMP gParallaxOriginalLayout = NULL;
@@ -58,11 +60,11 @@ static UIImage *GIBadgeTile(CGSize size, CGFloat scale, BOOL dark) {
         CGRect rect = CGRectMake(0, 0, size.width, size.height);
         CGFloat radius = CGRectGetHeight(rect) * 0.5;
 
-        // Frosted plate: dynamic white in light mode / soft dark in dark mode.
-        // The system's red plate is cleared separately, so this can be fairly
-        // opaque and still read as glass rather than pink.
-        CGFloat plateAlpha = 0.72 * intensity;
-        CGFloat plateWhite = dark ? 0.12 : 1.0;
+        // Liquid glass: the real frosting comes from a UIVisualEffectView that
+        // samples the wallpaper behind the badge. This tile only adds a faint
+        // tint, a thin rim and a top sheen — no opaque white plate.
+        CGFloat plateAlpha = (dark ? 0.10 : 0.06) * intensity;
+        CGFloat plateWhite = dark ? 0.0 : 1.0;
         CGContextSaveGState(c);
         UIBezierPath *shape = [UIBezierPath bezierPathWithRoundedRect:rect cornerRadius:radius];
         [shape addClip];
@@ -143,6 +145,7 @@ static void GIBadgeSuppressRedPlate(UIView *view) {
 
     BOOL loggedOnce = NO;
     for (UIView *sub in view.subviews) {
+        if (sub.tag == kBadgeBlurTag) continue;   // our own blur layer
         NSString *name = NSStringFromClass([sub class]);
         BOOL isText = [sub isKindOfClass:UILabel.class] ||
                       [name rangeOfString:@"Label"].location != NSNotFound ||
@@ -178,6 +181,28 @@ static void GIBadgeUpdate(UIView *view) {
     // Kill the solid red system plate so only glass + digits remain.
     GIBadgeSuppressRedPlate(view);
 
+    // Real liquid-glass frosting: a system blur view under the digits that
+    // samples whatever is behind the badge (wallpaper), like iOS 26 glass.
+    UIVisualEffectView *blurView = objc_getAssociatedObject(view, kBadgeBlurKey);
+    if (!blurView) {
+        UIBlurEffect *effect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterial];
+        blurView = [[UIVisualEffectView alloc] initWithEffect:effect];
+        blurView.userInteractionEnabled = NO;
+        blurView.tag = kBadgeBlurTag;
+        blurView.clipsToBounds = YES;
+        objc_setAssociatedObject(view, kBadgeBlurKey, blurView, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [view insertSubview:blurView atIndex:0];
+        GIBadgeLog(@"badge %@: blur layer added", NSStringFromClass([view class]));
+    }
+    CGRect blurFrame = view.bounds;
+    if (!CGRectEqualToRect(blurView.frame, blurFrame)) {
+        blurView.frame = blurFrame;
+    }
+    CGFloat corner = CGRectGetHeight(blurFrame) * 0.5;
+    if (fabs(blurView.layer.cornerRadius - corner) > 0.5) {
+        blurView.layer.cornerRadius = corner;
+    }
+
     BOOL dark = NO;
     @try {
         id trait = [view valueForKey:@"traitCollection"];
@@ -207,9 +232,13 @@ static void GIBadgeUpdate(UIView *view) {
         overlay.masksToBounds = NO;
         overlay.contentsGravity = kCAGravityResize;
         objc_setAssociatedObject(view, kBadgeOverlayKey, overlay, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        // Bottom-most sublayer: above the (cleared) system background plate but
-        // below the number label, so the digits stay crisp on the glass.
-        [view.layer insertSublayer:overlay atIndex:0];
+        // Above the blur view (so the rim reads) but below the digits.
+        UIVisualEffectView *existingBlur = objc_getAssociatedObject(view, kBadgeBlurKey);
+        if (existingBlur) {
+            [view.layer insertSublayer:overlay above:existingBlur.layer];
+        } else {
+            [view.layer insertSublayer:overlay atIndex:0];
+        }
     }
 
     [CATransaction begin];
