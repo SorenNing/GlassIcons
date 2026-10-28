@@ -69,36 +69,29 @@ static void GIReloadPreferencesIfNeeded(void) {
     GIReadPreferences();
 }
 
-// Nothing is skipped for folder-ness: closed folder icons, open folder
-// containers and their inner previews all get the glass overlay. Only tiny
-// (<40pt) views are ignored to avoid noise on sub-views.
+// Folders are fully excluded (user decision after 0.8.x iterations): closed
+// folder icons, open folder panels and icons inside them all skip the glass.
+// Only app icons on the home screen get the overlay.
 static BOOL GIShouldSkipView(UIView *view) {
     if (!view) return YES;
     CGFloat side = MIN(CGRectGetWidth(view.bounds), CGRectGetHeight(view.bounds));
-    return side < 40.0;
-}
+    if (side < 40.0) return YES;
 
-// Folder icons get stretched into the open-folder panel during the zoom
-// transition; a full-strength overlay then becomes a giant white ring.
-// Cap the effective strength for folder icon views.
-static CGFloat GIEffectiveIntensity(UIView *view) {
-    CGFloat intensity = gIntensity;
     @try {
         id icon = [view valueForKey:@"icon"];
         if (icon && [NSStringFromClass([icon class]) rangeOfString:@"FolderIcon"].location != NSNotFound) {
-            intensity = MIN(intensity, (CGFloat)0.60);
+            return YES;
         }
     } @catch (__unused NSException *e) {}
-    return intensity;
-}
 
-// While a folder view controller is visible on screen, the home screen folder
-// icon views are being zoom-stretched into the panel; the overlay would appear
-// as a giant misplaced ring. Hide overlays on folder icons during that time.
-static BOOL GILargeTransformInView(UIView *view) {
-    CGAffineTransform t = view.transform;
-    CGFloat scale = (CGFloat)fabs(sqrt(t.a * t.a + t.b * t.b));
-    return scale > (CGFloat)1.10;
+    // Anything presented inside an open folder lives under SBFolder* views.
+    // SBRootFolderView (the whole home screen) must NOT match.
+    UIView *parent = view.superview;
+    for (int depth = 0; depth < 8 && parent; depth++, parent = parent.superview) {
+        NSString *name = NSStringFromClass([parent class]);
+        if ([name hasPrefix:@"SBFolder"] && ![name hasPrefix:@"SBRootFolder"]) return YES;
+    }
+    return NO;
 }
 
 static CGImageRef GIFindIconImage(UIView *view) {
@@ -242,33 +235,7 @@ static void GIUpdateOverlay(UIView *view) {
 
     CGRect bounds = view.bounds;
     CGFloat factor = GIStrengthForView(view);
-    CGFloat intensity = GIEffectiveIntensity(view);
-
-    // Folder icon views are taller than the icon itself (they include the
-    // label area). Draw the glass on the square icon area only so folder
-    // tiles match app-icon size exactly.
-    BOOL isFolderIcon = NO;
-    @try {
-        id icon = [view valueForKey:@"icon"];
-        isFolderIcon = icon && [NSStringFromClass([icon class]) rangeOfString:@"FolderIcon"].location != NSNotFound;
-        if (isFolderIcon) {
-            CGFloat side = MIN(CGRectGetWidth(bounds), CGRectGetHeight(bounds));
-            side = MIN(side, 60.0);
-            bounds = CGRectMake(CGRectGetMidX(bounds) - side * 0.5,
-                                CGRectGetMinY(bounds),
-                                side, side);
-        }
-    } @catch (__unused NSException *e) {}
-
-    // Zoom-stretched folder icons: drop the overlay for this pass so the
-    // stretched ring never flashes; it reappears when the transform settles.
-    if (isFolderIcon && GILargeTransformInView(view)) {
-        if (overlay) {
-            overlay.hidden = YES;
-        }
-        return;
-    }
-
+    CGFloat intensity = gIntensity;
     NSString *signature = GISettingsSignature(factor);
     NSString *lastSignature = objc_getAssociatedObject(view, kGlassSignatureKey);
 
