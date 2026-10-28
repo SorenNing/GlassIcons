@@ -84,35 +84,31 @@
 
     NSArray<NSString *> *candidates = @[
         [NSString stringWithFormat:@"filza://view%@", path],
-        [NSString stringWithFormat:@"filza://%@", path],
         [NSString stringWithFormat:@"shareddocuments://%@", path],
     ];
 
     NSMutableArray<NSURL *> *urls = [NSMutableArray array];
     for (NSString *string in candidates) {
-        NSString *encoded = [string stringByAddingPercentEncodingWithAllowedCharacters:
-                             [NSCharacterSet URLQueryAllowedCharacterSet]];
-        NSURL *url = [NSURL URLWithString:encoded ?: string];
+        NSURL *url = [NSURL URLWithString:string];
         if (url) [urls addObject:url];
     }
+    [self tryOpenIconFolderURLs:urls index:0 path:path];
+}
 
-    __block BOOL opened = NO;
-    for (NSURL *url in urls) {
-        [UIApplication.sharedApplication openURL:url options:@{} completionHandler:^(BOOL success) {
-            if (success) opened = YES;
-        }];
-        if (opened) break;
+-(void)tryOpenIconFolderURLs:(NSArray<NSURL *> *)urls index:(NSUInteger)index path:(NSString *)path {
+    if (index >= urls.count) {
+        [self glassAlertWithTitle:@"图标目录"
+                          message:[NSString stringWithFormat:@"没能打开文件管理器，请用 Filza 进入：\n%@", path]
+                         copyPath:path];
+        return;
     }
 
-    // If no handler took it, explain instead of failing silently.
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        if (opened) return;
-        [self glassAlertWithTitle:@"图标目录"
-                          message:[NSString stringWithFormat:
-                                   @"没能自动打开文件管理器。\n请用 Filza 进入：\n%@", path]
-                         copyPath:path];
-    });
+    [UIApplication.sharedApplication openURL:urls[index] options:@{} completionHandler:^(BOOL success) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (success) return;   // opened: stop here, do not chain further
+            [self tryOpenIconFolderURLs:urls index:index + 1 path:path];
+        });
+    }];
 }
 
 @end

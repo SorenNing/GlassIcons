@@ -82,7 +82,11 @@ static void GIBadgeSuppressRedPlate(UIView *view) {
 
     for (UIView *sub in view.subviews) {
         NSString *name = NSStringFromClass([sub class]);
-        BOOL isText = [sub isKindOfClass:UILabel.class] ||
+        id textValue = nil;
+        @try { textValue = [sub valueForKey:@"text"]; } @catch (__unused NSException *e) { textValue = nil; }
+        BOOL hasTextContent = [textValue isKindOfClass:NSString.class] && [(NSString *)textValue length] > 0;
+        BOOL isText = [sub isKindOfClass:UILabel.class] || hasTextContent ||
+                      [sub respondsToSelector:@selector(setAttributedText:)] ||
                       [name rangeOfString:@"Label"].location != NSNotFound ||
                       [name rangeOfString:@"Text"].location != NSNotFound;
         if (isText) {

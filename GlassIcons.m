@@ -243,19 +243,30 @@ static NSString *GIIconBundleID(UIView *view) {
     @try { icon = [view valueForKey:@"icon"]; } @catch (__unused NSException *e) { return nil; }
     if (!icon) return nil;
 
-    // Different SpringBoard versions expose the id under different names.
+    // Only accept reverse-DNS looking strings: display names must never match
+    // an image file, otherwise two apps can end up with each other's icon.
     NSArray<NSString *> *keys = @[@"applicationBundleID", @"applicationBundleIdentifier",
                                   @"bundleIdentifier", @"leafIdentifier", @"identifier"];
+    BOOL (^looksLikeBundleID)(NSString *) = ^BOOL(NSString *candidate) {
+        if (candidate.length < 4 || candidate.length > 128) return NO;
+        NSRange dot = [candidate rangeOfString:@"."];
+        if (dot.location == NSNotFound) return NO;
+        if ([candidate containsString:@"/"] || [candidate containsString:@" "]) return NO;
+        NSCharacterSet *bad = [[NSCharacterSet characterSetWithCharactersInString:
+                                @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_"]
+                               invertedSet];
+        return [candidate rangeOfCharacterFromSet:bad].location == NSNotFound;
+    };
+
     for (NSString *key in keys) {
         id value = nil;
         @try { value = [icon valueForKey:key]; } @catch (__unused NSException *e) { value = nil; }
-        if ([value isKindOfClass:NSString.class] && [(NSString *)value length]) {
-            NSString *candidate = (NSString *)value;
-            if ([candidate containsString:@"/"]) {
-                candidate = [candidate componentsSeparatedByString:@"/"].lastObject;
-            }
-            if ([candidate containsString:@"."]) return candidate;
+        if (![value isKindOfClass:NSString.class]) continue;
+        NSString *candidate = (NSString *)value;
+        if ([candidate containsString:@"/"]) {
+            candidate = [candidate componentsSeparatedByString:@"/"].lastObject;
         }
+        if (looksLikeBundleID(candidate)) return candidate;
     }
 
     id app = nil;
@@ -273,7 +284,8 @@ static NSString *GIIconBundleID(UIView *view) {
     NSString *cls = NSStringFromClass([icon class]);
     if (![logged containsObject:cls]) {
         [logged addObject:cls];
-        GILogMain(@"no bundle id for icon class %@", cls);
+        GILogMain(@"no bundle id for icon class %@ (icon class=%@)", cls,
+                  NSStringFromClass([icon class]));
     }
     return nil;
 }
