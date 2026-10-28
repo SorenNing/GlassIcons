@@ -12,7 +12,7 @@
 			<key>label</key>
 			<string>玻璃图标</string>
 			<key>footerText</key>
-			<string>给桌面图标叠加玻璃高光与描边，文件夹图标与 App 图标同等对待。</string>
+			<string>给桌面 App 图标叠加玻璃高光与描边。文件夹不做任何处理。</string>
 		</dict>
 		<dict>
 			<key>cell</key>
