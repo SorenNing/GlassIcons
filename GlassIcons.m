@@ -574,9 +574,26 @@ static void GIInstallCacheHooks(void) {
             gCacheOrigImageForIcon = method_getImplementation(m);
             IMP themed = imp_implementationWithBlock(^UIImage *(id self, id icon) {
                 UIImage *themed = GICacheImageFromIcon(icon, className);
-                if (themed) return themed;
+                if (themed) {
+                    static NSInteger served = 0;
+                    if (served++ < 40) {
+                        GILogMain(@"cache[%@] served themed image (count %ld)", className, (long)served);
+                    }
+                    return themed;
+                }
                 UIImage *(*orig)(id, SEL, id) = (UIImage *(*)(id, SEL, id))gCacheOrigImageForIcon;
-                return orig(self, selImage, icon);
+                UIImage *original = orig(self, selImage, icon);
+                static NSInteger passthrough = 0;
+                if (passthrough++ < 25) {
+                    id bid = nil;
+                    @try { bid = [icon valueForKey:@"applicationBundleID"]; } @catch (__unused NSException *e) { bid = nil; }
+                    if (![bid isKindOfClass:NSString.class]) {
+                        @try { bid = [icon valueForKey:@"bundleIdentifier"]; } @catch (__unused NSException *e) { bid = nil; }
+                    }
+                    GILogMain(@"cache[%@] passthrough %@ (no pack file)", className,
+                              [bid isKindOfClass:NSString.class] ? bid : @"<unknown>");
+                }
+                return original;
             });
             method_setImplementation(m, themed);
             GILogMain(@"cache hook installed on %@ imageForIcon:", className);
@@ -589,7 +606,7 @@ static void GIInstallCacheHooks(void) {
                 if (themed) return themed;
                 UIImage *(*orig)(id, SEL, id) = (UIImage *(*)(id, SEL, id))gCacheOrigCachedImageForIcon;
                 return orig(self, selCached, icon);
-            });
+            });  // cached: same serve logging as above is unnecessary (imageForIcon dominates)
             method_setImplementation(m2, themed2);
             GILogMain(@"cache hook installed on %@ cachedImageForIcon:", className);
         }
