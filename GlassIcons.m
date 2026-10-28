@@ -78,6 +78,20 @@ static BOOL GIShouldSkipView(UIView *view) {
     return side < 40.0;
 }
 
+// Folder icons get stretched into the open-folder panel during the zoom
+// transition; a full-strength overlay then becomes a giant white ring.
+// Cap the effective strength for folder icon views.
+static CGFloat GIEffectiveIntensity(UIView *view) {
+    CGFloat intensity = gIntensity;
+    @try {
+        id icon = [view valueForKey:@"icon"];
+        if (icon && [NSStringFromClass([icon class]) rangeOfString:@"FolderIcon"].location != NSNotFound) {
+            intensity = MIN(intensity, (CGFloat)0.60);
+        }
+    } @catch (__unused NSException *e) {}
+    return intensity;
+}
+
 static CGImageRef GIFindIconImage(UIView *view) {
     id contents = view.layer.contents;
     if (contents && CFGetTypeID((__bridge CFTypeRef)contents) == CGImageGetTypeID()) {
@@ -130,23 +144,23 @@ static NSString *GISettingsSignature(CGFloat factor) {
                                       (long)rimBucket, (long)sheenBucket];
 }
 
-static UIImage *GITileImage(CGSize size, CGFloat scale, CGFloat factor, NSString *signature) {
+static UIImage *GITileImage(CGSize size, CGFloat scale, CGFloat factor, CGFloat intensity, NSString *signature) {
     if (!gTileCache) gTileCache = [NSMutableDictionary dictionary];
-    NSString *key = [NSString stringWithFormat:@"%@|%.1fx%.1f@%.0f", signature, size.width, size.height, scale];
+    NSString *key = [NSString stringWithFormat:@"%@|%.1fx%.1f@%.0f|%d", signature, size.width, size.height, scale, (int)lroundf(intensity * 20.0)];
     UIImage *cached = gTileCache[key];
     if (cached) return cached;
-    if (gTileCache.count > 32) [gTileCache removeAllObjects];
+    if (gTileCache.count > 48) [gTileCache removeAllObjects];
 
     CGFloat darkScale = 0.30 + 0.70 * factor;
     // Light icons need much less white-on-white; keep dark icons vivid.
     CGFloat lightDamp = factor > 0.8 ? 0.55 : 1.0;
-    CGFloat sheenTop = 0.40 * gSheenWeight * darkScale * gIntensity * lightDamp;
-    CGFloat sheenMid = 0.10 * gSheenWeight * darkScale * gIntensity * lightDamp;
-    CGFloat sheenBottom = 0.06 * gSheenWeight * darkScale * gIntensity * lightDamp;
+    CGFloat sheenTop = 0.40 * gSheenWeight * darkScale * intensity * lightDamp;
+    CGFloat sheenMid = 0.10 * gSheenWeight * darkScale * intensity * lightDamp;
+    CGFloat sheenBottom = 0.06 * gSheenWeight * darkScale * intensity * lightDamp;
     // Rim is symmetric now: full ring visible top and bottom.
-    CGFloat rimTop = 0.85 * gRimWeight * darkScale * gIntensity;
-    CGFloat rimMid = 0.70 * gRimWeight * darkScale * gIntensity;
-    CGFloat rimBottom = 0.85 * gRimWeight * darkScale * gIntensity;
+    CGFloat rimTop = 0.85 * gRimWeight * darkScale * intensity;
+    CGFloat rimMid = 0.70 * gRimWeight * darkScale * intensity;
+    CGFloat rimBottom = 0.85 * gRimWeight * darkScale * intensity;
 
     UIImage *image = nil;
     @try {
@@ -219,6 +233,7 @@ static void GIUpdateOverlay(UIView *view) {
 
     CGRect bounds = view.bounds;
     CGFloat factor = GIStrengthForView(view);
+    CGFloat intensity = GIEffectiveIntensity(view);
     NSString *signature = GISettingsSignature(factor);
     NSString *lastSignature = objc_getAssociatedObject(view, kGlassSignatureKey);
 
@@ -230,7 +245,7 @@ static void GIUpdateOverlay(UIView *view) {
 
     CGFloat scale = view.window ? view.window.screen.scale : UIScreen.mainScreen.scale;
     if (scale <= 0.0) scale = UIScreen.mainScreen.scale;
-    UIImage *tile = GITileImage(bounds.size, scale, factor, signature);
+    UIImage *tile = GITileImage(bounds.size, scale, factor, intensity, signature);
     if (!tile) return;
 
     if (!overlay) {

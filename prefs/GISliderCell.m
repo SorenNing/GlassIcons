@@ -1,20 +1,25 @@
 #import "GISliderCell.h"
 
-@interface PSTableCell ()
-- (id)readPreferenceValue:(PSSpecifier *)specifier;
-- (void)setPreferenceValue:(id)value specifier:(PSSpecifier *)specifier;
-@end
+static double GICellNumber(id value, double fallback) {
+    return [value respondsToSelector:@selector(doubleValue)] ? [value doubleValue] : fallback;
+}
 
 @implementation GISliderCell {
+    UISlider *_slider;
     UILabel *_valueLabel;
-    BOOL _wiredSlider;
 }
 
 - (instancetype)initWithStyle:(long)style reuseIdentifier:(NSString *)identifier specifier:(PSSpecifier *)specifier {
     if ((self = [super initWithStyle:style reuseIdentifier:identifier specifier:specifier])) {
         self.selectionStyle = UITableViewCellSelectionStyleNone;
         self.accessoryType = UITableViewCellAccessoryNone;
-        _valueLabel = [UILabel new];
+        self.clipsToBounds = NO;
+
+        _slider = [[UISlider alloc] init];
+        [_slider addTarget:self action:@selector(glassValueChanged:) forControlEvents:UIControlEventValueChanged];
+        [self.contentView addSubview:_slider];
+
+        _valueLabel = [[UILabel alloc] init];
         _valueLabel.font = [UIFont monospacedDigitSystemFontOfSize:15 weight:UIFontWeightMedium];
         _valueLabel.textColor = UIColor.labelColor;
         _valueLabel.textAlignment = NSTextAlignmentRight;
@@ -23,70 +28,71 @@
     return self;
 }
 
-- (UISlider *)glassSlider {
-    // Search the whole view hierarchy (PSSliderTableCell may nest the slider).
-    NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:self.contentView];
-    if (self.superview) [queue addObject:self];
-    while (queue.count) {
-        UIView *node = queue.firstObject;
-        [queue removeObjectAtIndex:0];
-        for (UIView *child in node.subviews) {
-            if ([child isKindOfClass:UISlider.class]) return (UISlider *)child;
-            [queue addObject:child];
+- (double)glassReadPreference {
+    @try {
+        NSString *key = [self.specifier propertyForKey:@"key"];
+        double fallback = GICellNumber([self.specifier propertyForKey:@"default"], 0.0);
+        if (!key.length) return fallback;
+        NSString *domain = [self.specifier propertyForKey:@"defaults"] ?: @"com.soren.glassicons";
+        CFPreferencesAppSynchronize((__bridge CFStringRef)domain);
+        CFPropertyListRef value = CFPreferencesCopyAppValue((__bridge CFStringRef)key, (__bridge CFStringRef)domain);
+        double result = fallback;
+        if (value) {
+            if (CFGetTypeID(value) == CFNumberGetTypeID()) {
+                double number = fallback;
+                CFNumberGetValue(value, kCFNumberDoubleType, &number);
+                result = number;
+            }
+            CFRelease(value);
         }
+        return result;
+    } @catch (__unused NSException *e) {
+        return 0.0;
     }
-    return nil;
 }
 
-- (void)glassWireSlider {
-    if (_wiredSlider) return;
-    UISlider *slider = [self glassSlider];
-    if (!slider) return;
-    [slider addTarget:self action:@selector(glassValueChanged:) forControlEvents:UIControlEventValueChanged];
-    _wiredSlider = YES;
+- (void)glassWritePreference:(double)number {
+    @try {
+        NSString *key = [self.specifier propertyForKey:@"key"];
+        if (!key.length) return;
+        NSString *domain = [self.specifier propertyForKey:@"defaults"] ?: @"com.soren.glassicons";
+        CFPreferencesSetAppValue((__bridge CFStringRef)key, (__bridge CFPropertyListRef)@(number), (__bridge CFStringRef)domain);
+        CFPreferencesAppSynchronize((__bridge CFStringRef)domain);
+        CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                             CFSTR("com.soren.glassicons.changed"), NULL, NULL, true);
+    } @catch (__unused NSException *e) {}
 }
 
-- (void)glassUpdateValue {
-    if (!self.specifier) return;
-    UISlider *slider = [self glassSlider];
-    if (!slider) return;
+- (void)glassSyncValue {
+    if (!self.specifier || !_slider) return;
+    @try {
+        double minimum = GICellNumber([self.specifier propertyForKey:@"min"], 0.0);
+        double maximum = GICellNumber([self.specifier propertyForKey:@"max"], 1.0);
+        if (maximum <= minimum) maximum = minimum + 1.0;
+        double value = [self glassReadPreference];
+        value = fmax(minimum, fmin(maximum, value));
 
-    double minimum = [[self.specifier propertyForKey:@"min"] doubleValue];
-    double maximum = [[self.specifier propertyForKey:@"max"] doubleValue];
-    if (maximum <= minimum) maximum = minimum + 1.0;
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        _slider.minimumValue = (float)minimum;
+        _slider.maximumValue = (float)maximum;
+        _slider.value = (float)value;
+        [CATransaction commit];
 
-    id value = [self readPreferenceValue:self.specifier];
-    double number = [value respondsToSelector:@selector(doubleValue)] ? [value doubleValue] : minimum;
-    number = fmax(minimum, fmin(maximum, number));
-
-    [CATransaction begin];
-    [CATransaction setDisableActions:YES];
-    slider.minimumValue = (float)minimum;
-    slider.maximumValue = (float)maximum;
-    slider.value = (float)number;
-    [CATransaction commit];
-
-    _valueLabel.text = [NSString stringWithFormat:@"%.2f", number];
+        _valueLabel.text = [NSString stringWithFormat:@"%.2f", value];
+    } @catch (__unused NSException *e) {}
 }
 
 - (void)layoutSubviews {
     [super layoutSubviews];
-    // PSSliderTableCell places its own UISlider; find it anywhere in the hierarchy.
-    UISlider *slider = [self glassSlider];
-    CGFloat width = self.contentView.bounds.size.width;
-    CGFloat valueWidth = 96.0;
-    CGFloat midY = self.contentView.bounds.size.height * 0.5;
-
-    if (slider) {
-        CGRect frame = slider.frame;
-        frame.origin.x = 16.0;
-        frame.size.width = width - valueWidth - 56.0;
-        frame.origin.y = midY - frame.size.height * 0.5;
-        slider.frame = frame;
-        [self glassWireSlider];
-    }
-    _valueLabel.frame = CGRectMake(width - valueWidth - 16.0, midY - 10.0, valueWidth, 20.0);
-    [self glassUpdateValue];
+    @try {
+        CGFloat width = self.contentView.bounds.size.width;
+        CGFloat midY = self.contentView.bounds.size.height * 0.5;
+        CGFloat left = 16.0, right = 16.0, valueWidth = 96.0;
+        _slider.frame = CGRectMake(left, midY - 15.5, width - left - valueWidth - right - 8.0, 31.0);
+        _valueLabel.frame = CGRectMake(width - valueWidth - right, midY - 10.0, valueWidth, 20.0);
+        [self glassSyncValue];
+    } @catch (__unused NSException *e) {}
 }
 
 - (void)prepareForReuse {
@@ -96,12 +102,12 @@
 
 - (void)refreshCellContentsWithSpecifier:(PSSpecifier *)specifier {
     [super refreshCellContentsWithSpecifier:specifier];
-    [self glassUpdateValue];
+    [self glassSyncValue];
 }
 
 - (void)glassValueChanged:(UISlider *)slider {
     _valueLabel.text = [NSString stringWithFormat:@"%.2f", slider.value];
-    [self setPreferenceValue:@((double)slider.value) specifier:self.specifier];
+    [self glassWritePreference:slider.value];
 }
 
 @end

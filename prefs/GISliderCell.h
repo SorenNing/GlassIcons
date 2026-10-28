@@ -1,4 +1,4 @@
 #import "PSCompat.h"
 
-@interface GISliderCell : PSSliderTableCell
+@interface GISliderCell : PSTableCell
 @end
