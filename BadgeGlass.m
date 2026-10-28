@@ -59,8 +59,10 @@ static UIImage *GIBadgeTile(CGSize size, CGFloat scale, BOOL dark) {
         CGFloat radius = CGRectGetHeight(rect) * 0.5;
 
         // Frosted plate: dynamic white in light mode / soft dark in dark mode.
-        CGFloat plateAlpha = 0.34 * intensity;
-        CGFloat plateWhite = dark ? 0.10 : 1.0;
+        // The system's red plate is cleared separately, so this can be fairly
+        // opaque and still read as glass rather than pink.
+        CGFloat plateAlpha = 0.72 * intensity;
+        CGFloat plateWhite = dark ? 0.12 : 1.0;
         CGContextSaveGState(c);
         UIBezierPath *shape = [UIBezierPath bezierPathWithRoundedRect:rect cornerRadius:radius];
         [shape addClip];
@@ -111,6 +113,58 @@ static UIImage *GIBadgeTile(CGSize size, CGFloat scale, BOOL dark) {
     }];
 }
 
+static void GIBadgeLog(NSString *format, ...) {
+    va_list args;
+    va_start(args, format);
+    NSString *message = [[NSString alloc] initWithFormat:format arguments:args];
+    va_end(args);
+    NSString *line = [NSString stringWithFormat:@"[%@] %@\n", [NSDate date], message];
+    NSString *path = @"/var/mobile/Library/GlassIconsBadge.log";
+    NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:path];
+    if (!handle) {
+        [[NSFileManager defaultManager] createFileAtPath:path contents:nil attributes:nil];
+        handle = [NSFileHandle fileHandleForWritingAtPath:path];
+    }
+    @try {
+        [handle seekToEndOfFile];
+        [handle writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+        [handle closeFile];
+    } @catch (__unused NSException *e) {}
+}
+
+// Hide the system's solid red plate but keep the number label: the badge must
+// read as glass, not pink. Anything that is not a text-bearing view gets its
+// own background cleared; plain image views are made transparent.
+static void GIBadgeSuppressRedPlate(UIView *view) {
+    if (!view) return;
+
+    view.backgroundColor = UIColor.clearColor;
+    view.layer.backgroundColor = UIColor.clearColor.CGColor;
+
+    BOOL loggedOnce = NO;
+    for (UIView *sub in view.subviews) {
+        NSString *name = NSStringFromClass([sub class]);
+        BOOL isText = [sub isKindOfClass:UILabel.class] ||
+                      [name rangeOfString:@"Label"].location != NSNotFound ||
+                      [name rangeOfString:@"Text"].location != NSNotFound;
+        if (isText) continue;
+
+        if ([sub isKindOfClass:UIImageView.class]) {
+            ((UIImageView *)sub).image = nil;   // plate image, not the digits
+        }
+        sub.backgroundColor = UIColor.clearColor;
+        sub.layer.backgroundColor = UIColor.clearColor.CGColor;
+        if ([sub isKindOfClass:UIVisualEffectView.class]) {
+            sub.hidden = YES;
+        }
+
+        if (!loggedOnce) {
+            loggedOnce = YES;
+            GIBadgeLog(@"badge %@ subview %@ -> cleared", NSStringFromClass([view class]), name);
+        }
+    }
+}
+
 static void GIBadgeUpdate(UIView *view) {
     if (!view || CGRectIsEmpty(view.bounds)) return;
 
@@ -120,6 +174,9 @@ static void GIBadgeUpdate(UIView *view) {
         objc_setAssociatedObject(view, kBadgeOverlayKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         return;
     }
+
+    // Kill the solid red system plate so only glass + digits remain.
+    GIBadgeSuppressRedPlate(view);
 
     BOOL dark = NO;
     @try {
@@ -150,10 +207,9 @@ static void GIBadgeUpdate(UIView *view) {
         overlay.masksToBounds = NO;
         overlay.contentsGravity = kCAGravityResize;
         objc_setAssociatedObject(view, kBadgeOverlayKey, overlay, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        // Insert ABOVE the badge background but keep text on top: badge text is
-        // usually a UILabel subview added after background; appending our layer
-        // on top is fine because the plate is translucent and the text is bold.
-        [view.layer addSublayer:overlay];
+        // Bottom-most sublayer: above the (cleared) system background plate but
+        // below the number label, so the digits stay crisp on the glass.
+        [view.layer insertSublayer:overlay atIndex:0];
     }
 
     [CATransaction begin];
