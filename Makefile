@@ -15,6 +15,8 @@ SUBPROJECTS += prefs
 include $(THEOS_MAKE_PATH)/aggregate.mk
 
 after-stage::
+	install -d "$(THEOS_STAGING_DIR)/DEBIAN"
+	install -m 0755 pkg-deb/postinst "$(THEOS_STAGING_DIR)/DEBIAN/postinst"
 	install -d "$(THEOS_STAGING_DIR)/Library/PreferenceLoader/Preferences"
 	install -m 644 prefs/GlassIcons.plist "$(THEOS_STAGING_DIR)/Library/PreferenceLoader/Preferences/GlassIcons.plist"
 	ldid -S -Cadhoc "$(THEOS_STAGING_DIR)/Library/PreferenceBundles/GlassIconsPrefs.bundle/GlassIconsPrefs" && echo "signed prefs bundle"

@@ -264,6 +264,14 @@
 		</dict>
 		<dict>
 			<key>action</key>
+			<string>openIconPackFolder:</string>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>打开图标目录</string>
+		</dict>
+		<dict>
+			<key>action</key>
 			<string>reloadIconPack:</string>
 			<key>cell</key>
 			<string>PSButtonCell</string>

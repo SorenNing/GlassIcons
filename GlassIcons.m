@@ -240,15 +240,27 @@ static NSString *GIIconBundleID(UIView *view) {
     return nil;
 }
 
+static void GIIconPackEnsureDirectory(void) {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    if ([fm fileExistsAtPath:kIconPackDir]) return;
+    [fm createDirectoryAtPath:kIconPackDir withIntermediateDirectories:YES attributes:nil error:NULL];
+    NSString *readme = [kIconPackDir stringByAppendingPathComponent:@"README.txt"];
+    if (![fm fileExistsAtPath:readme]) {
+        NSString *text = @"把 PNG 图标放在这个目录里，文件名用 App 的 Bundle ID，例如\n"
+                          "  com.tencent.xin.png          微信\n"
+                          "  com.alipay.iphoneclient.png  支付宝\n"
+                          "支持 @2x / @3x 后缀（优先 @3x > @2x > png）。\n"
+                          "放好后到 设置 → GlassIcons → 桌面图标包 → 重新加载图标包。\n";
+        [text writeToFile:readme atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+    }
+}
+
 static UIImage *GIIconPackImageForBundleID(NSString *bundleID) {
     if (!bundleID.length) return nil;
 
     if (!gIconPackCache) {
         gIconPackCache = [NSMutableDictionary dictionary];
-        [[NSFileManager defaultManager] createDirectoryAtPath:kIconPackDir
-                                  withIntermediateDirectories:YES
-                                                   attributes:nil
-                                                        error:NULL];
+        GIIconPackEnsureDirectory();
     }
 
     UIImage *cached = gIconPackCache[bundleID];
@@ -469,6 +481,7 @@ static void GIPreferencesChanged(CFNotificationCenterRef center __unused, void *
 
 __attribute__((constructor)) static void GIInitialize(void) {
     if (![NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.springboard"]) return;
+    GIIconPackEnsureDirectory();
     GIReadPreferences();
     GIReadDisabledState();
     GIInstallHook();

@@ -1,0 +1,20 @@
+#!/bin/sh
+set -e
+DIR=/var/mobile/Library/GlassIcons/Icons
+mkdir -p "$DIR"
+chmod 0755 /var/mobile/Library/GlassIcons "$DIR" 2>/dev/null || true
+chown mobile:mobile /var/mobile/Library/GlassIcons "$DIR" 2>/dev/null || true
+if [ ! -f "$DIR/README.txt" ]; then
+  cat > "$DIR/README.txt" <<'TXT'
+把 PNG 图标放在这个目录里，文件名用 App 的 Bundle ID：
+
+  com.tencent.xin.png          微信
+  com.alipay.iphoneclient.png  支付宝
+
+也支持 @2x / @3x 后缀（优先 @3x > @2x > png）。
+放好后到 设置 → GlassIcons → 桌面图标包 → 重新加载图标包。
+TXT
+  chmod 0644 "$DIR/README.txt"
+  chown mobile:mobile "$DIR/README.txt" 2>/dev/null || true
+fi
+exit 0
