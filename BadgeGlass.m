@@ -1,6 +1,7 @@
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 #import <CoreFoundation/CoreFoundation.h>
 #import <CoreImage/CoreImage.h>
 #import <dispatch/dispatch.h>
@@ -174,6 +175,91 @@ static UIImage *GIBadgeBlurredBackdrop(CGImageRef crop) {
 
 #pragma mark - Badge plate
 
+
+#pragma mark - Live backdrop layer (render-server sampling)
+
+static const void *kBadgeBackdropKey = &kBadgeBackdropKey;
+static NSString *gBadgeBackdropMode = nil;   // "custom-filter" | "system-filter" | "none"
+
+static id GIBadgeFilterWithType(NSString *type) {
+    Class filterCls = NSClassFromString(@"CAFilter");
+    if (!filterCls) return nil;
+    SEL sel = NSSelectorFromString(@"filterWithType:");
+    if (![filterCls respondsToSelector:sel]) return nil;
+    id (*msgSend)(Class, SEL, NSString *) = (id (*)(Class, SEL, NSString *))objc_msgSend;
+    @try { return msgSend(filterCls, sel, type); } @catch (__unused NSException *e) { return nil; }
+}
+
+// A CABackdropLayer samples whatever is painted behind it, in the render
+// server — the same primitive 液态Dock uses. With the built-in gaussianBlur +
+// colorSaturate filters this gives a real, transparent backdrop capture
+// (no white material), which is the closest thing to "clear" Liquid Glass
+// available on iOS 17.
+static UIView *GIBadgeMakeBackdropView(CGSize size, CGFloat scale) {
+    Class layerCls = NSClassFromString(@"CABackdropLayer");
+    if (!layerCls) { gBadgeBackdropMode = @"none"; return nil; }
+
+    UIView *host = [[UIView alloc] initWithFrame:CGRectMake(0, 0, size.width, size.height)];
+    host.userInteractionEnabled = NO;
+    host.backgroundColor = UIColor.clearColor;
+    host.tag = 90002;
+
+    CALayer *backdrop = [[layerCls alloc] init];
+    @try {
+        [backdrop setValue:@NO forKey:@"windowServerAware"];
+        [backdrop setValue:@NO forKey:@"layerUsesCoreImageFilters"];
+        [backdrop setValue:@YES forKey:@"ignoresScreenClip"];
+        [backdrop setValue:@(scale) forKey:@"scale"];
+        [backdrop setValue:@"dylv.liquidglass" forKey:@"groupNamespace"];
+        [backdrop setValue:@"soren.glassicons.badge" forKey:@"groupName"];
+    } @catch (__unused NSException *e) {}
+
+    // Prefer the custom refraction shader if the ecosystem registered one,
+    // otherwise fall back to system blur + saturation (still live sampling).
+    id custom = GIBadgeFilterWithType(@"dylv.liquidglass.appicons");
+    if (custom) {
+        backdrop.filters = @[custom];
+        gBadgeBackdropMode = @"custom-filter";
+    } else {
+        NSMutableArray *filters = [NSMutableArray array];
+        id blur = GIBadgeFilterWithType(@"gaussianBlur");
+        if (blur) {
+            @try { [blur setValue:@(gBadgeBlur) forKey:@"inputRadius"]; } @catch (__unused NSException *e) {}
+            [filters addObject:blur];
+        }
+        id saturate = GIBadgeFilterWithType(@"colorSaturate");
+        if (saturate) {
+            @try { [saturate setValue:@(gBadgeSaturation) forKey:@"inputAmount"]; } @catch (__unused NSException *e) {}
+            [filters addObject:saturate];
+        }
+        backdrop.filters = filters.count ? filters : nil;
+        gBadgeBackdropMode = filters.count ? @"system-filter" : @"none";
+    }
+
+    backdrop.frame = host.bounds;
+    [host.layer addSublayer:backdrop];
+    [host.layer setValue:backdrop forKey:@"sorenBackdrop"];
+
+    GIBadgeLog(@"backdrop layer mode=%@ size=%.0fx%.0f", gBadgeBackdropMode, size.width, size.height);
+    return host;
+}
+
+static void GIBadgeSyncBackdrop(UIView *badge, UIView *backdropHost, CGFloat scale) {
+    if (!backdropHost) return;
+    if (!CGRectEqualToRect(backdropHost.frame, badge.bounds)) backdropHost.frame = badge.bounds;
+    CALayer *backdrop = [backdropHost.layer valueForKey:@"sorenBackdrop"];
+    if (backdrop) {
+        if (!CGRectEqualToRect(backdrop.frame, backdropHost.bounds)) backdrop.frame = backdropHost.bounds;
+        @try { [backdrop setValue:@(scale) forKey:@"scale"]; } @catch (__unused NSException *e) {}
+    }
+    // Clip the glass to the badge pill.
+    CGFloat corner = CGRectGetHeight(badge.bounds) * 0.5;
+    if (fabs(backdropHost.layer.cornerRadius - corner) > 0.5) {
+        backdropHost.layer.cornerRadius = corner;
+        backdropHost.layer.masksToBounds = YES;
+    }
+}
+
 static NSString *GIBadgeSignature(CGSize size, CGFloat scale, CGImageRef backdrop) {
     NSInteger i = (NSInteger)lroundf((float)(gBadgeIntensity * 20.0));
     NSInteger s = (NSInteger)lroundf((float)(gBadgeSheen * 20.0));
@@ -242,10 +328,10 @@ static UIImage *GIBadgeTile(CGSize size, CGFloat scale, CGImageRef backdrop) {
         [shape addClip];
 
         if (backdropImage) {
-            // Refracted backdrop: the icon artwork under the badge, blurred and
-            // colour-boosted — this is the "clear glass over content" look.
+            // Fallback refraction: the icon artwork under the badge, blurred and
+            // colour-boosted — used only when CABackdropLayer is unavailable.
             [backdropImage drawInRect:rect];
-        } else {
+        } else if (gBadgeBackdropMode == nil || [gBadgeBackdropMode isEqualToString:@"none"]) {
             CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
             CGFloat comps[] = {1.0, 1.0, 1.0, 0.12 * sheen,
                                1.0, 1.0, 1.0, 0.03 * sheen};
@@ -320,17 +406,34 @@ static void GIBadgeUpdate(UIView *view) {
     CALayer *overlay = objc_getAssociatedObject(view, kBadgeOverlayKey);
     if (!gBadgeEnabled || gBadgeIntensity <= 0.001) {
         if (overlay) [overlay removeFromSuperlayer];
+        UIView *host = objc_getAssociatedObject(view, kBadgeBackdropKey);
+        if (host) { [host removeFromSuperview]; objc_setAssociatedObject(view, kBadgeBackdropKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
         objc_setAssociatedObject(view, kBadgeOverlayKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         return;
     }
 
     GIBadgeSuppressRedPlate(view);
 
-    CGSize backdropPixels = CGSizeZero;
-    CGImageRef backdrop = GIBadgeCropBackdrop(view, &backdropPixels);
-
     CGFloat scale = view.window ? view.window.screen.scale : UIScreen.mainScreen.scale;
     if (scale <= 0.0) scale = UIScreen.mainScreen.scale;
+
+    // Live render-server backdrop sampling (primary path).
+    UIView *backdropHost = objc_getAssociatedObject(view, kBadgeBackdropKey);
+    if (!backdropHost) {
+        backdropHost = GIBadgeMakeBackdropView(view.bounds.size, scale);
+        if (backdropHost) {
+            objc_setAssociatedObject(view, kBadgeBackdropKey, backdropHost, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            [view insertSubview:backdropHost atIndex:0];
+        }
+    }
+    GIBadgeSyncBackdrop(view, backdropHost, scale);
+
+    // Static Core Image sampling is only the fallback when no backdrop layer.
+    CGImageRef backdrop = NULL;
+    if (!backdropHost) {
+        CGSize backdropPixels = CGSizeZero;
+        backdrop = GIBadgeCropBackdrop(view, &backdropPixels);
+    }
 
     NSString *signature = GIBadgeSignature(view.bounds.size, scale, backdrop);
     NSString *last = objc_getAssociatedObject(view, kBadgeSignatureKey);
