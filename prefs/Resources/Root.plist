@@ -120,6 +120,26 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>label</key>
+			<string>通知角标</string>
+			<key>footerText</key>
+			<string>给角标气泡加玻璃质感（磨砂底+描边+顶部柔光），数字保持原样。</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</key>
+			<key>label</key>
+			<string>角标玻璃</string>
+			<key>defaults</key>
+			<string>com.soren.glassicons</string>
+			<key>key</key>
+			<string>BadgeGlass</string>
+			<key>default</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
 			<string>关于</string>
 			<key>footerText</key>
 			<string>GlassIcons&#10;作者: Ning&#10;调整后回到桌面立即生效，无需注销。</string>
