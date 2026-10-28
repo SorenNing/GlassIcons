@@ -74,6 +74,12 @@ static void GIBadgeSuppressRedPlate(UIView *view) {
     view.backgroundColor = UIColor.clearColor;
     view.layer.backgroundColor = UIColor.clearColor.CGColor;
 
+    // Some builds paint the red plate straight into layer.contents.
+    id ownContents = view.layer.contents;
+    if (ownContents && CFGetTypeID((__bridge CFTypeRef)ownContents) == CGImageGetTypeID()) {
+        view.layer.contents = nil;
+    }
+
     for (UIView *sub in view.subviews) {
         NSString *name = NSStringFromClass([sub class]);
         BOOL isText = [sub isKindOfClass:UILabel.class] ||
@@ -95,6 +101,14 @@ static void GIBadgeSuppressRedPlate(UIView *view) {
         }
         sub.backgroundColor = UIColor.clearColor;
         sub.layer.backgroundColor = UIColor.clearColor.CGColor;
+
+        // Any layer under the badge that carries a bitmap is part of the plate.
+        for (CALayer *layer in sub.layer.sublayers) {
+            id contents = layer.contents;
+            if (contents && CFGetTypeID((__bridge CFTypeRef)contents) == CGImageGetTypeID()) {
+                layer.contents = nil;
+            }
+        }
         if ([sub isKindOfClass:UIVisualEffectView.class]) sub.hidden = YES;
     }
 }

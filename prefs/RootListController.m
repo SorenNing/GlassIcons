@@ -10,6 +10,9 @@
 -(void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"GlassIcons";
+    // Make the drop folder exist as soon as Settings is opened.
+    [[NSFileManager defaultManager] createDirectoryAtPath:@"/var/mobile/Library/GlassIcons/Icons"
+                              withIntermediateDirectories:YES attributes:nil error:NULL];
 }
 
 -(id)preferencesPlistName {
@@ -42,6 +45,74 @@
     CFPreferencesAppSynchronize((__bridge CFStringRef)domain);
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
                                          CFSTR("com.soren.glassicons.changed"), NULL, NULL, true);
+}
+
+#pragma mark - Icon pack buttons
+
+-(void)glassAlertWithTitle:(NSString *)title message:(NSString *)message copyPath:(NSString *)path {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
+                                                                   message:message
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    if (path.length) {
+        [alert addAction:[UIAlertAction actionWithTitle:@"复制路径" style:UIAlertActionStyleDefault
+                                                handler:^(__unused UIAlertAction *action) {
+            UIPasteboard.generalPasteboard.string = path;
+        }]];
+    }
+    [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+-(void)reloadIconPack:(PSSpecifier *)specifier {
+    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                         CFSTR("com.soren.glassicons.iconpack"), NULL, NULL, true);
+
+    NSString *dir = @"/var/mobile/Library/GlassIcons/Icons";
+    NSUInteger count = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:NULL].count;
+    NSString *message = [NSString stringWithFormat:
+        @"已请求重绘桌面图标。\n目录中共 %lu 个文件。\n\n%@", (unsigned long)count, dir];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        [self glassAlertWithTitle:@"重新加载图标包" message:message copyPath:dir];
+    });
+}
+
+-(void)openIconPackFolder:(PSSpecifier *)specifier {
+    NSString *path = @"/var/mobile/Library/GlassIcons/Icons";
+    [[NSFileManager defaultManager] createDirectoryAtPath:path
+                              withIntermediateDirectories:YES attributes:nil error:NULL];
+
+    NSArray<NSString *> *candidates = @[
+        [NSString stringWithFormat:@"filza://view%@", path],
+        [NSString stringWithFormat:@"filza://%@", path],
+        [NSString stringWithFormat:@"shareddocuments://%@", path],
+    ];
+
+    NSMutableArray<NSURL *> *urls = [NSMutableArray array];
+    for (NSString *string in candidates) {
+        NSString *encoded = [string stringByAddingPercentEncodingWithAllowedCharacters:
+                             [NSCharacterSet URLQueryAllowedCharacterSet]];
+        NSURL *url = [NSURL URLWithString:encoded ?: string];
+        if (url) [urls addObject:url];
+    }
+
+    __block BOOL opened = NO;
+    for (NSURL *url in urls) {
+        [UIApplication.sharedApplication openURL:url options:@{} completionHandler:^(BOOL success) {
+            if (success) opened = YES;
+        }];
+        if (opened) break;
+    }
+
+    // If no handler took it, explain instead of failing silently.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (opened) return;
+        [self glassAlertWithTitle:@"图标目录"
+                          message:[NSString stringWithFormat:
+                                   @"没能自动打开文件管理器。\n请用 Filza 进入：\n%@", path]
+                         copyPath:path];
+    });
 }
 
 @end

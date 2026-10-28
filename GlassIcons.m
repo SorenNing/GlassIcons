@@ -32,6 +32,25 @@ static const void *kIconPackLayerKey = &kIconPackLayerKey;
 static const void *kIconPackSignatureKey = &kIconPackSignatureKey;
 static NSString * const kIconPackDir = @"/var/mobile/Library/GlassIcons/Icons";
 
+static void GILogMain(NSString *format, ...) {
+    va_list args;
+    va_start(args, format);
+    NSString *message = [[NSString alloc] initWithFormat:format arguments:args];
+    va_end(args);
+    NSString *line = [NSString stringWithFormat:@"[%@] %@\n", [NSDate date], message];
+    NSString *path = @"/var/mobile/Library/GlassIcons.log";
+    NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:path];
+    if (!handle) {
+        [[NSFileManager defaultManager] createFileAtPath:path contents:nil attributes:nil];
+        handle = [NSFileHandle fileHandleForWritingAtPath:path];
+    }
+    @try {
+        [handle seekToEndOfFile];
+        [handle writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+        [handle closeFile];
+    } @catch (__unused NSException *e) {}
+}
+
 static BOOL GIIsDisabled(void) { return gDisabled; }
 
 static void GIReadDisabledState(void) {
@@ -224,18 +243,37 @@ static NSString *GIIconBundleID(UIView *view) {
     @try { icon = [view valueForKey:@"icon"]; } @catch (__unused NSException *e) { return nil; }
     if (!icon) return nil;
 
-    for (NSString *key in @[@"applicationBundleID", @"bundleIdentifier", @"iconIdentifier"]) {
+    // Different SpringBoard versions expose the id under different names.
+    NSArray<NSString *> *keys = @[@"applicationBundleID", @"applicationBundleIdentifier",
+                                  @"bundleIdentifier", @"leafIdentifier", @"identifier"];
+    for (NSString *key in keys) {
         id value = nil;
         @try { value = [icon valueForKey:key]; } @catch (__unused NSException *e) { value = nil; }
-        if ([value isKindOfClass:NSString.class] && [(NSString *)value length]) return value;
+        if ([value isKindOfClass:NSString.class] && [(NSString *)value length]) {
+            NSString *candidate = (NSString *)value;
+            if ([candidate containsString:@"/"]) {
+                candidate = [candidate componentsSeparatedByString:@"/"].lastObject;
+            }
+            if ([candidate containsString:@"."]) return candidate;
+        }
     }
 
     id app = nil;
     @try { app = [icon valueForKey:@"application"]; } @catch (__unused NSException *e) { app = nil; }
     if (app) {
-        id bid = nil;
-        @try { bid = [app valueForKey:@"bundleIdentifier"]; } @catch (__unused NSException *e) { bid = nil; }
-        if ([bid isKindOfClass:NSString.class] && [(NSString *)bid length]) return bid;
+        for (NSString *key in @[@"bundleIdentifier", @"bundleID", @"identifier"]) {
+            id bid = nil;
+            @try { bid = [app valueForKey:key]; } @catch (__unused NSException *e) { bid = nil; }
+            if ([bid isKindOfClass:NSString.class] && [(NSString *)bid length]) return bid;
+        }
+    }
+
+    static NSMutableSet<NSString *> *logged;
+    if (!logged) logged = [NSMutableSet set];
+    NSString *cls = NSStringFromClass([icon class]);
+    if (![logged containsObject:cls]) {
+        [logged addObject:cls];
+        GILogMain(@"no bundle id for icon class %@", cls);
     }
     return nil;
 }
@@ -304,6 +342,13 @@ static BOOL GIApplyIconPack(UIView *view, CGRect bounds) {
             objc_setAssociatedObject(view, kIconPackLayerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
         return NO;
+    }
+
+    static NSMutableSet<NSString *> *loggedIDs;
+    if (!loggedIDs) loggedIDs = [NSMutableSet set];
+    if (![loggedIDs containsObject:bundleID]) {
+        [loggedIDs addObject:bundleID];
+        GILogMain(@"iconpack match %@ -> %@", bundleID, image ? @"applied" : @"no file");
     }
 
     NSString *signature = [NSString stringWithFormat:@"%@|%.0fx%.0f", bundleID, bounds.size.width, bounds.size.height];
@@ -482,6 +527,8 @@ static void GIPreferencesChanged(CFNotificationCenterRef center __unused, void *
 __attribute__((constructor)) static void GIInitialize(void) {
     if (![NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.springboard"]) return;
     GIIconPackEnsureDirectory();
+    GILogMain(@"init: iconpack dir contents = %lu", (unsigned long)[[NSFileManager defaultManager]
+              contentsOfDirectoryAtPath:kIconPackDir error:NULL].count);
     GIReadPreferences();
     GIReadDisabledState();
     GIInstallHook();
