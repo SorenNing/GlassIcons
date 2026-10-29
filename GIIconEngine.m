@@ -1,12 +1,7 @@
-// GIIconEngine.m — icon-pack replacement engine ported from SnowBoardRecovered
-// 1.0 (which user-verified as replacing home-screen icons on iOS 17.2.1).
-// Reads themed PNGs from /var/mobile/Library/GlassIcons/Icons/<bundleID>.png
-// (@2x/@3x variants supported). Hooks SBHIconImageCache (imageForIcon: /
-// cachedImageForIcon: / realImageForIcon:), SBApplicationIcon
-// generateIconImageWithInfo:, and seven icon layout classes to place the
-// themed image directly on the rendered image view, then actively purges and
-// reloads visible icons. Glass overlay (GlassIcons.m) and badges
-// (BadgeGlass.m) are untouched.
+// GIIconEngine.m — icon-pack replacement engine (v0.35)
+// Data-layer hooks return original themed PNG; passive layout hook applies image on demand.
+// No active purge/reload, no forced scaling — preserves system rendering.
+// Glass overlay and badges are untouched.
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -165,16 +160,119 @@ static id HGenerateIcon(id self, SEL _cmd, id info) {
     return ((id (*)(id, SEL, id))oGenerateIcon)(self, _cmd, info);
 }
 
+#pragma mark - passive layout hook
+
+static NSMutableDictionary<NSString *, NSValue *> *gLayoutOriginals;
+static NSUInteger gViewProbeLogs;
+
+static id GIIconFromHost(id host) {
+    // Try to get bundleID from the icon/host object.
+    for (NSString *name in @[@"applicationBundleID", @"bundleIdentifier", @"iconIdentifier"]) {
+        if ([host respondsToSelector:NSSelectorFromString(name)]) {
+            id bid = ((id (*)(id, SEL))objc_msgSend)(host, NSSelectorFromString(name));
+            if ([bid isKindOfClass:[NSString class]] && [(NSString *)bid length] > 0) return bid;
+        }
+    }
+    // Fallback: traverse ivars.
+    for (NSString *key in @[@"_icon", @"icon", @"representedIcon", @"applicationIcon"]) {
+        id candidate = [host valueForKey:key];
+        if ([candidate respondsToSelector:@selector(applicationBundleID)])
+            return [candidate applicationBundleID];
+        if ([candidate isKindOfClass:[NSString class]] && [(NSString *)candidate length] > 0)
+            return candidate;
+    }
+    return nil;
+}
+
+static void GIApplyPassiveImage(id host) {
+    NSString *bundleID = [GIIconFromHost(host) isKindOfClass:[NSString class]] ? (NSString *)GIIconFromHost(host) : nil;
+    UIImage *themeImage = GIEngineImageForBundleID(bundleID);
+    if (!themeImage) return;
+    
+    // Find the UIImageView that renders the icon.
+    UIImageView *imageView = nil;
+    if ([host isKindOfClass:[UIImageView class]]) {
+        imageView = (UIImageView *)host;
+    } else {
+        // Try known ivars.
+        for (NSString *key in @[@"_iconImageView", @"iconImageView", @"imageView"]) {
+            id cand = [host valueForKey:key];
+            if ([cand isKindOfClass:[UIImageView class]]) { imageView = cand; break; }
+        }
+        // Last resort: scan subviews.
+        if (!imageView && [host isKindOfClass:[UIView class]]) {
+            for (UIView *sv in [(UIView *)host subviews]) {
+                if ([sv isKindOfClass:[UIImageView class]]) {
+                    CGSize sz = sv.bounds.size;
+                    if (sz.width >= 18 && sz.height >= 18 && ABS(sz.width - sz.height) <= 8) {
+                        imageView = (UIImageView *)sv;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if (!imageView || imageView.image == themeImage) return;
+    
+    imageView.image = themeImage;
+    // No forced cornerRadius/clipsToBounds — let the system handle it.
+    if (gViewProbeLogs < 40) {
+        gViewProbeLogs++;
+        GILogMain(@"view serve %@", bundleID ?: @"(nil)");
+    }
+}
+
+static void HLayoutSubviews(id self, SEL _cmd) {
+    IMP original = NULL;
+    Class cls = object_getClass(self);
+    if (cls && gLayoutOriginals) {
+        NSValue *value = gLayoutOriginals[NSStringFromClass(cls)];
+        if (value) original = (IMP)[value pointerValue];
+    }
+    if (original && original != (IMP)HLayoutSubviews)
+        ((void (*)(id, SEL))original)(self, _cmd);
+    
+    GIApplyPassiveImage(self);
+    
+    if (gViewProbeLogs < 40) {
+        gViewProbeLogs++;
+        GILogMain(@"view probe class=%@ bundle=%@", NSStringFromClass([self class]), 
+                  [GIIconFromHost(self) isKindOfClass:[NSString class]] ? (NSString *)GIIconFromHost(self) : @"(nil)");
+    }
+}
+
+static void GIHookLayoutClass(NSString *className) {
+    Class cls = NSClassFromString(className);
+    if (!cls) { GILogMain(@"layout hook: class missing %@", className); return; }
+    Method method = class_getInstanceMethod(cls, @selector(layoutSubviews));
+    if (!method) { GILogMain(@"layout hook: %@ has no layoutSubviews", className); return; }
+    IMP original = method_getImplementation(method);
+    if (!gLayoutOriginals) gLayoutOriginals = [NSMutableDictionary dictionary];
+    gLayoutOriginals[className] = [NSValue valueWithPointer:original];
+    
+    const char *type = method_getTypeEncoding(method);
+    if (!class_addMethod(cls, @selector(layoutSubviews), (IMP)HLayoutSubviews, type))
+        method_setImplementation(method, (IMP)HLayoutSubviews);
+    GILogMain(@"layout hook ok: %@", className);
+}
+
 #pragma mark - install / reload
 
 static dispatch_once_t gEngineOnce;
 
 static void GIIconEngineInstallHooks(void) {
     dispatch_once(&gEngineOnce, ^{
+        gLayoutOriginals = [NSMutableDictionary dictionary];
         GIHook(NSClassFromString(@"SBHIconImageCache"), @selector(imageForIcon:), (IMP)HImageForIcon, &oImageForIcon);
         GIHook(NSClassFromString(@"SBHIconImageCache"), @selector(cachedImageForIcon:), (IMP)HCachedImageForIcon, &oCachedImageForIcon);
         GIHook(NSClassFromString(@"SBHIconImageCache"), NSSelectorFromString(@"realImageForIcon:"), (IMP)HRealImageForIcon, &oRealImageForIcon);
         GIHook(NSClassFromString(@"SBApplicationIcon"), @selector(generateIconImageWithInfo:), (IMP)HGenerateIcon, &oGenerateIcon);
+        
+        // Layout hooks — passive, only on-demand when system lays out icons.
+        for (NSString *name in @[@"SBHLibraryCategoryPodIconView", @"_SBHLibraryPodIconView", @"SBHLibraryPodIconView",
+                                  @"SearchUIHomeScreenAppIconView", @"SBFolderIconImageView",
+                                  @"SBIconImageCrossfadeView", @"SBIconView"])
+            GIHookLayoutClass(name);
     });
 }
 
@@ -189,6 +287,5 @@ void GIIconEngineReload(void) {
 void GIIconEngineInstall(void) {
     gEngineEnabled = GIEngineUserEnabled() && GIEngineHasIcons();
     GILogMain(@"engine install enabled=%d", gEngineEnabled);
-    if (!gEngineEnabled) return;
-    GIIconEngineInstallHooks();
+    if (gEngineEnabled) GIIconEngineInstallHooks();
 }
