@@ -72,19 +72,13 @@ static UIImage *GIEngineImageForBundleID(NSString *bid) {
 
     UIImage *img = [UIImage imageWithContentsOfFile:usedPath];
     if (!img) return nil;
-    CGFloat scale = [UIScreen mainScreen].scale;
-    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
-    format.scale = scale;
-    format.opaque = NO;
-    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(60, 60) format:format];
-    UIImage *out = [renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *ctx) {
-        [img drawInRect:CGRectMake(0, 0, 60, 60)];
-    }] ?: img;
-
+    // Return the original image and let SpringBoard scale to the requested
+    // size. Pre-resampling to a fixed 60pt@3x made icons blurry whenever the
+    // system displayed them at other sizes (dock, App Library, Spotlight).
     @synchronized (gEngineCache) {
-        gEngineCache[bid] = out;
+        gEngineCache[bid] = img;
     }
-    return out;
+    return img;
 }
 
 #pragma mark - icon / bundle id discovery
@@ -186,10 +180,9 @@ static BOOL GIApplyImageToHost(id host) {
     UIImageView *imageView = GIImageViewForHost(host);
     if (!imageView) return NO;
     if (imageView.image == image) return YES;
+    // Let the system scale and clip as it does for stock icons. Forcing
+    // AspectFill/cornerRadius here blurred icons at non-standard sizes.
     imageView.image = image;
-    imageView.contentMode = UIViewContentModeScaleAspectFill;
-    imageView.clipsToBounds = YES;
-    imageView.layer.cornerRadius = CGRectGetWidth(imageView.bounds) * 0.225;
     GILogMain(@"view serve %@ class=%@", bundleID, NSStringFromClass([host class]));
     return YES;
 }
