@@ -41,3 +41,60 @@ jobs:
           name: GlassIcons-arm64e-roothide
           path: packages/*.deb
           if-no-files-found: error
+
+  probe:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: brew install make ldid dpkg gnu-tar xz rsync
+      - name: Install Theos (roothide) + iOS 16.5 SDK
+        run: |
+          set -euo pipefail
+          THEOS="$RUNNER_TEMP/theos"
+          echo "$(brew --prefix gnu-tar)/libexec/gnubin" >> "$GITHUB_PATH"
+          git clone --recursive --depth 1 https://github.com/roothide/theos.git "$THEOS"
+          git clone --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.git "$RUNNER_TEMP/sdks"
+          git -C "$RUNNER_TEMP/sdks" sparse-checkout set iPhoneOS16.5.sdk
+          mkdir -p "$THEOS/sdks" && cp -R "$RUNNER_TEMP/sdks/iPhoneOS16.5.sdk" "$THEOS/sdks/"
+      - name: Build probe dylib
+        run: |
+          set -euo pipefail
+          xcrun -sdk "$THEOS/sdks/iPhoneOS16.5.sdk" clang -arch arm64e -arch arm64 \
+            -fobjc-arc -fmodules -shared -o GIProbe.dylib GIProbe.m \
+            -framework Foundation -framework UIKit \
+            -install_name /var/jb/Library/MobileSubstrate/DynamicLibraries/GIProbe.dylib
+          ldid -S -Cadhoc GIProbe.dylib
+          file GIProbe.dylib
+      - name: Assemble probe deb
+        run: |
+          set -euo pipefail
+          D=probe-pkg/DEBIAN
+          mkdir -p "$D" probe-pkg/var/jb/Library/MobileSubstrate/DynamicLibraries
+          cat > "$D/control" <<'CTL'
+          Package: com.soren.glassicons.probe
+          Name: GlassIcons Probe
+          Version: 0.1
+          Architecture: iphoneos-arm64e
+          Description: One-shot icon pipeline class dumper (diagnostic only)
+          Maintainer: Ning
+          Author: Ning
+          Section: Tweaks
+          Priority: optional
+          Depends: firmware (>= 15.0), firmware (<< 18.0), mobilesubstrate
+          CTL
+          cat > probe-pkg/var/jb/Library/MobileSubstrate/DynamicLibraries/GIProbe.plist <<'PL'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict><key>Filter</key><dict><key>Bundles</key><array><string>com.apple.springboard</string></array></dict></dict></plist>
+          PL
+          cp GIProbe.dylib probe-pkg/var/jb/Library/MobileSubstrate/DynamicLibraries/
+          chmod 0755 probe-pkg/var/jb/Library/MobileSubstrate/DynamicLibraries/GIProbe.dylib
+          find probe-pkg -exec touch {} +
+          dpkg-deb --root-owner-group -Zgzip --build probe-pkg com.soren.glassicons.probe_0.1_iphoneos-arm64e.deb
+          dpkg-deb -I com.soren.glassicons.probe_0.1_iphoneos-arm64e.deb | head -5
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GIProbe
+          path: com.soren.glassicons.probe_0.1_iphoneos-arm64e.deb
+          if-no-files-found: error
