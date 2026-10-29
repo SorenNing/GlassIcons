@@ -564,13 +564,19 @@ static void GIInstallCacheHooks(void) {
             Class cls = objc_getClass(name.UTF8String);
             GILogMain(@"probe %@ = %@", name, cls ? @"EXISTS" : @"missing");
             if (!cls) continue;
-            for (SEL sel in @[@selector(imageForBundleIdentifier:withScale:),
-                              @selector(imageForBundleIdentifier:withScale:withOverrides:),
-                              @selector(iconImageForIcon:image:),
-                              @selector(generateIconImage:),
-                              @selector(generateIconImageWithInfo:)]) {
+            NSArray<NSString *> *selectorNames = @[
+                @"imageForBundleIdentifier:withScale:",
+                @"imageForBundleIdentifier:withScale:withOverrides:",
+                @"iconImageForIcon:image:",
+                @"generateIconImage:",
+                @"generateIconImageWithInfo:",
+                @"imageForIcon:",
+                @"cachedImageForIcon:",
+            ];
+            for (NSString *selectorName in selectorNames) {
+                SEL sel = NSSelectorFromString(selectorName);
                 if (class_getInstanceMethod(cls, sel)) {
-                    GILogMain(@"probe %@ responds to %@", name, NSStringFromSelector(sel));
+                    GILogMain(@"probe %@ responds to %@", name, selectorName);
                 }
             }
         }
