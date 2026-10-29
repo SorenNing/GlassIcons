@@ -470,6 +470,8 @@ static UIImage *GICacheImageFromIcon(id icon) {
     return GIThemedImageForBundleID(bundleID);
 }
 
+static IMP gOrigImageForBundleID = NULL;
+
 static void GIInstallCacheHooks(void) {
     SEL selImage = @selector(imageForIcon:);
     SEL selCached = @selector(cachedImageForIcon:);
@@ -507,6 +509,33 @@ static void GIInstallCacheHooks(void) {
             method_setImplementation(m2, themed2);
             GILogMain(@"cache hook active: %@ cachedImageForIcon:", className);
         }
+    }
+
+    // Bundle-id keyed fetch (SnowBoard covers these too) — the most direct
+    // mapping to our Icons/<bundleID>.png files.
+    NSArray<NSString *> *ownerClasses = @[@"SBApplicationIcon", @"SBApplication"];
+    SEL selBundle = @selector(imageForBundleIdentifier:withScale:);
+    for (NSString *className in ownerClasses) {
+        Class cls = objc_getClass(className.UTF8String);
+        if (!cls) continue;
+        Method m = class_getInstanceMethod(cls, selBundle);
+        if (!m) continue;
+        if (!gOrigImageForBundleID) gOrigImageForBundleID = method_getImplementation(m);
+        IMP themed = imp_implementationWithBlock(^UIImage *(id self, NSString *bundleID, CGFloat scale) {
+            if (gIconPackEnabled) {
+                UIImage *themedImage = GIThemedImageForBundleID(bundleID);
+                if (themedImage) {
+                    if (++gCacheServeCount <= 60) {
+                        GILogMain(@"bundleid serve #%ld %@", (long)gCacheServeCount, bundleID);
+                    }
+                    return themedImage;
+                }
+            }
+            UIImage *(*orig)(id, SEL, NSString *, CGFloat) = (UIImage *(*)(id, SEL, NSString *, CGFloat))gOrigImageForBundleID;
+            return orig(self, selBundle, bundleID, scale);
+        });
+        method_setImplementation(m, themed);
+        GILogMain(@"bundleid hook active: %@ imageForBundleIdentifier:withScale:", className);
     }
 }
 
