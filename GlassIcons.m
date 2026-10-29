@@ -513,16 +513,21 @@ static void GIInstallCacheHooks(void) {
     }
 
     // Bundle-id keyed fetch (SnowBoard covers these too) — the most direct
-    // mapping to our Icons/<bundleID>.png files.
-    NSArray<NSString *> *ownerClasses = @[@"SBApplicationIcon", @"SBApplication"];
+    // mapping to our Icons/<bundleID>.png files. Classes may load after our
+    // constructor: retry until both are hooked.
+    if (gBundleIDHookInstalled) return;
+
     SEL selBundle = @selector(imageForBundleIdentifier:withScale:);
-    for (NSString *className in ownerClasses) {
-        Class cls = objc_getClass(className.UTF8String);
+    NSArray<NSString *> *ownerClasses = @[@"SBApplicationIcon", @"SBApplication"];
+    static BOOL hooked[2] = {NO, NO};
+    for (NSUInteger i = 0; i < ownerClasses.count; i++) {
+        if (hooked[i]) continue;
+        Class cls = objc_getClass(ownerClasses[i].UTF8String);
         if (!cls) continue;
         Method m = class_getInstanceMethod(cls, selBundle);
         if (!m) continue;
         if (!gOrigImageForBundleID) gOrigImageForBundleID = method_getImplementation(m);
-        IMP themed = imp_implementationWithBlock(^UIImage *(id self, NSString *bundleID, CGFloat scale) {
+        IMP replacement = imp_implementationWithBlock(^UIImage *(id self, NSString *bundleID, CGFloat scale) {
             if (gIconPackEnabled) {
                 UIImage *themedImage = GIThemedImageForBundleID(bundleID);
                 if (themedImage) {
@@ -533,10 +538,18 @@ static void GIInstallCacheHooks(void) {
                 }
             }
             UIImage *(*orig)(id, SEL, NSString *, CGFloat) = (UIImage *(*)(id, SEL, NSString *, CGFloat))gOrigImageForBundleID;
-            return orig(self, selBundle, bundleID, scale);
+            SEL sel = @selector(imageForBundleIdentifier:withScale:);
+            return orig(self, sel, bundleID, scale);
         });
-        method_setImplementation(m, themed);
-        GILogMain(@"bundleid hook active: %@ imageForBundleIdentifier:withScale:", className);
+        method_setImplementation(m, replacement);
+        hooked[i] = YES;
+        gBundleIDHookInstalled = hooked[0] && hooked[1];
+        GILogMain(@"bundleid hook active: %@ imageForBundleIdentifier:withScale:", ownerClasses[i]);
+    }
+
+    if (!gBundleIDHookInstalled && ++gInstallAttempts < 40) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ GIInstallCacheHooks(); });
     }
 }
 
