@@ -471,6 +471,8 @@ static UIImage *GICacheImageFromIcon(id icon) {
 }
 
 static IMP gOrigImageForBundleID = NULL;
+static IMP gOrigGenerateIcon = NULL;
+static BOOL gGenerateHookInstalled = NO;
 static BOOL gBundleIDHookInstalled = NO;
 
 static void GIInstallCacheHooks(void) {
@@ -547,9 +549,43 @@ static void GIInstallCacheHooks(void) {
         GILogMain(@"bundleid hook active: %@ imageForBundleIdentifier:withScale:", ownerClasses[i]);
     }
 
-    if (!gBundleIDHookInstalled && ++gInstallAttempts < 40) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{ GIInstallCacheHooks(); });
+    // THE definitive hook on iOS 17.2.1 (per runtime probe): icon images are
+    // rendered by SBApplicationIcon generateIconImageWithInfo:. Wrap the orig
+    // call and substitute our themed image for the app's bundle id.
+    if (!gGenerateHookInstalled) {
+        Class iconCls = objc_getClass("SBApplicationIcon");
+        SEL genSel = @selector(generateIconImageWithInfo:);
+        Method gm = iconCls ? class_getInstanceMethod(iconCls, genSel) : NULL;
+        if (gm) {
+            if (!gOrigGenerateIcon) gOrigGenerateIcon = method_getImplementation(gm);
+            IMP replacement = imp_implementationWithBlock(^UIImage *(id self, id info) {
+                UIImage *(*orig)(id, SEL, id) = (UIImage *(*)(id, SEL, id))gOrigGenerateIcon;
+                UIImage *systemImage = orig(self, genSel, info);
+                if (!gIconPackEnabled) return systemImage;
+
+                NSString *bundleID = nil;
+                for (NSString *key in @[@"applicationBundleID", @"bundleIdentifier"]) {
+                    id value = nil;
+                    @try { value = [self valueForKey:key]; } @catch (__unused NSException *e) { value = nil; }
+                    if ([value isKindOfClass:NSString.class] && [(NSString *)value length]) {
+                        bundleID = (NSString *)value;
+                        break;
+                    }
+                }
+                UIImage *themed = bundleID ? GIThemedImageForBundleID(bundleID) : nil;
+                if (themed) {
+                    static NSInteger logged = 0;
+                    if (logged++ < 30) {
+                        GILogMain(@"generate serve %@", bundleID);
+                    }
+                    return themed;
+                }
+                return systemImage;
+            });
+            method_setImplementation(gm, replacement);
+            gGenerateHookInstalled = YES;
+            GILogMain(@"generate hook active: SBApplicationIcon generateIconImageWithInfo:");
+        }
     }
 
     // One-shot probe: which candidate classes/selectors actually exist here?
