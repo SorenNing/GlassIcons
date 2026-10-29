@@ -411,10 +411,76 @@ static void GIUpdateOverlay(UIView *view) {
     objc_setAssociatedObject(view, kGlassSignatureKey, signature, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
+// SnowBoard-style: after the system lays out the icon view, place the themed
+// image directly on the image view (what its cropper output would do).
+static void GISnowBoardApplyImage(UIView *iconView) {
+    if (!gIconPackEnabled) return;
+
+    NSString *bundleID = nil;
+    id icon = nil;
+    @try { icon = [iconView valueForKey:@"icon"]; } @catch (__unused NSException *e) { icon = nil; }
+    if (icon) {
+        for (NSString *key in @[@"applicationBundleID", @"bundleIdentifier"]) {
+            id value = nil;
+            @try { value = [icon valueForKey:key]; } @catch (__unused NSException *e) { value = nil; }
+            if ([value isKindOfClass:NSString.class] && [(NSString *)value length]) {
+                bundleID = (NSString *)value;
+                break;
+            }
+        }
+    }
+    UIImage *themed = bundleID ? GIIconPackImageForBundleID(bundleID) : nil;
+    if (!themed) return;
+
+    // Find the image-bearing subview (UIImageView or layer.contents).
+    __block UIImageView *target = nil;
+    if ([iconView isKindOfClass:UIImageView.class]) {
+        target = (UIImageView *)iconView;
+    }
+    if (!target) {
+        for (UIView *sub in iconView.subviews) {
+            if ([sub isKindOfClass:UIImageView.class]) { target = (UIImageView *)sub; break; }
+        }
+    }
+    if (!target) return;
+
+    static NSMutableSet<NSString *> *appliedIDs;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ appliedIDs = [NSMutableSet set]; });
+
+    CGFloat side = MIN(CGRectGetWidth(iconView.bounds), CGRectGetHeight(iconView.bounds));
+    NSString *signature = [NSString stringWithFormat:@"%@|%.0f", bundleID, side];
+    if ([objc_getAssociatedObject(iconView, "gi.pack.applied") isEqualToString:signature]) return;
+    objc_setAssociatedObject(iconView, "gi.pack.applied", signature, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    CGFloat scale = target.window ? target.window.screen.scale : UIScreen.mainScreen.scale;
+    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+    format.scale = scale;
+    format.opaque = NO;
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(side, side) format:format];
+    UIImage *scaled = [renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *ctx) {
+        [themed drawInRect:CGRectMake(0, 0, side, side)];
+    }];
+
+    target.image = scaled;
+    target.contentMode = UIViewContentModeScaleAspectFill;
+    target.clipsToBounds = YES;
+    target.layer.cornerRadius = side * 0.225;
+    target.layer.masksToBounds = YES;
+
+    if (![appliedIDs containsObject:bundleID]) {
+        [appliedIDs addObject:bundleID];
+        GILogMain(@"snowboard-style image set: %@", bundleID);
+    }
+}
+
 static void GIHookedLayoutSubviews(UIView *self, SEL _cmd) {
     if (gOriginalLayoutSubviews) ((void (*)(id, SEL))gOriginalLayoutSubviews)(self, _cmd);
     @autoreleasepool {
-        @try { GIUpdateOverlay(self); } @catch (__unused NSException *e) {}
+        @try {
+            GISnowBoardApplyImage(self);
+            GIUpdateOverlay(self);
+        } @catch (__unused NSException *e) {}
     }
 }
 
