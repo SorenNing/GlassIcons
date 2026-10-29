@@ -12,7 +12,10 @@
 
 extern void GILogMain(NSString *format, ...);
 
-static NSString *const kGIEngineIconDir = @"/var/mobile/Library/GlassIcons/Icons";
+static NSString *const kGIEngineIconDirs[] = {
+    @"/var/mobile/Library/GlassIcons/Icons",
+    @"/var/jb/var/mobile/Library/GlassIcons/Icons",
+};
 
 void GIIconEngineInstall(void);
 void GIIconEngineReload(void);
@@ -35,11 +38,35 @@ static BOOL GIEngineUserEnabled(void) {
 }
 
 static BOOL GIEngineHasIcons(void) {
-    NSUInteger count = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:kGIEngineIconDir error:NULL].count;
-    return count > 0;
+    for (NSUInteger i = 0; i < sizeof(kGIEngineIconDirs)/sizeof(kGIEngineIconDirs[0]); i++) {
+        NSUInteger count = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:kGIEngineIconDirs[i] error:NULL].count;
+        if (count > 0) {
+            GILogMain(@"iconpack dir contents = %lu at %s", (unsigned long)count, kGIEngineIconDirs[i].UTF8String);
+            return YES;
+        }
+    }
+    GILogMain(@"iconpack dir empty at all known paths");
+    return NO;
 }
 
 #pragma mark - image lookup
+
+static NSString *GIEngineFindIconPath(NSString *bid) {
+    NSString *suffixes[] = {@"@3x.png", @"@2x.png", @".png"};
+    NSString *paths[] = {kGIEngineIconDirs[0], kGIEngineIconDirs[1]};
+    NSInteger numPaths = sizeof(paths)/sizeof(paths[0]);
+    NSInteger numSuffixes = sizeof(suffixes)/sizeof(suffixes[0]);
+    
+    for (NSInteger pi = 0; pi < numPaths; pi++) {
+        for (NSInteger si = 0; si < numSuffixes; si++) {
+            NSString *path = [paths[pi] stringByAppendingPathComponent:[bid stringByAppendingString:suffixes[si]]];
+            if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
+                return path;
+            }
+        }
+    }
+    return nil;
+}
 
 static UIImage *GIEngineImageForBundleID(NSString *bid) {
     if (!gEngineEnabled || !bid.length) return nil;
@@ -51,22 +78,24 @@ static UIImage *GIEngineImageForBundleID(NSString *bid) {
         if (cached) return cached;
     }
 
-    NSFileManager *fm = [NSFileManager defaultManager];
-    NSString *usedPath = nil;
-    for (NSString *suffix in @[@"@3x.png", @"@2x.png", @".png"]) {
-        NSString *path = [kGIEngineIconDir stringByAppendingPathComponent:[bid stringByAppendingString:suffix]];
-        if ([fm fileExistsAtPath:path]) { usedPath = path; break; }
-    }
-    if (!usedPath) {
+    NSString *path = GIEngineFindIconPath(bid);
+    if (!path) {
         if (gEngineMisses.count < 200) {
             [gEngineMisses addObject:bid];
-            GILogMain(@"icon miss %@", bid);
+            GILogMain(@"icon miss %@ (searched: %@, %@)", bid, kGIEngineIconDirs[0], kGIEngineIconDirs[1]);
         }
         return nil;
     }
 
-    UIImage *img = [UIImage imageWithContentsOfFile:usedPath];
-    if (!img) return nil;
+    UIImage *img = [UIImage imageWithContentsOfFile:path];
+    if (!img) {
+        if (gEngineMisses.count < 200) {
+            [gEngineMisses addObject:bid];
+            GILogMain(@"icon fail load %@ at %@", bid, path);
+        }
+        return nil;
+    }
+    GILogMain(@"icon found %@ at %@", bid, path);
     // Return the original image and let SpringBoard scale to the requested
     // size. Pre-resampling to a fixed 60pt@3x made icons blurry whenever the
     // system displayed them at other sizes (dock, App Library, Spotlight).
@@ -166,31 +195,30 @@ static NSMutableDictionary<NSString *, NSValue *> *gLayoutOriginals;
 static NSUInteger gViewProbeLogs;
 
 static id GIIconFromHost(id host) {
-    // Try to get bundleID from the icon/host object.
-    for (NSString *name in @[@"applicationBundleID", @"bundleIdentifier", @"iconIdentifier"]) {
-        if ([host respondsToSelector:NSSelectorFromString(name)]) {
-            id bid = ((id (*)(id, SEL))objc_msgSend)(host, NSSelectorFromString(name));
-            if ([bid isKindOfClass:[NSString class]] && [(NSString *)bid length] > 0) return bid;
-        }
-    }
-    // Fallback: traverse ivars.
-    for (NSString *key in @[@"_icon", @"icon", @"representedIcon", @"applicationIcon"]) {
-        id candidate = [host valueForKey:key];
-        if ([candidate respondsToSelector:@selector(applicationBundleID)]) {
-            id bid = ((id (*)(id, SEL))objc_msgSend)(candidate, @selector(applicationBundleID));
-            if ([bid isKindOfClass:[NSString class]] && [(NSString *)bid length] > 0) return bid;
-        }
-        if ([candidate isKindOfClass:[NSString class]] && [(NSString *)candidate length] > 0)
-            return candidate;
-    }
-    return nil;
+    return GIEngineBundleIDForIcon(host);
 }
 
 static void GIApplyPassiveImage(id host) {
-    id bid = GIIconFromHost(host);
-    NSString *bundleID = [bid isKindOfClass:[NSString class]] ? (NSString *)bid : nil;
+    id bidObj = GIIconFromHost(host);
+    NSString *bundleID = [bidObj isKindOfClass:[NSString class]] ? (NSString *)bidObj : nil;
+    
+    if (!bundleID) {
+        if (gViewProbeLogs < 20) {
+            gViewProbeLogs++;
+            GILogMain(@"view probe: no bundleID (host=%@, bidObjClass=%@)", 
+                      NSStringFromClass([host class]), bidObj ? NSStringFromClass([bidObj class]) : @"nil");
+        }
+        return;
+    }
+
     UIImage *themeImage = GIEngineImageForBundleID(bundleID);
-    if (!themeImage) return;
+    if (!themeImage) {
+        if (gViewProbeLogs < 20) {
+            gViewProbeLogs++;
+            GILogMain(@"view probe: no image for %@", bundleID);
+        }
+        return;
+    }
     
     // Find the UIImageView that renders the icon.
     UIImageView *imageView = nil;
@@ -215,13 +243,25 @@ static void GIApplyPassiveImage(id host) {
             }
         }
     }
-    if (!imageView || imageView.image == themeImage) return;
+    if (!imageView) {
+        if (gViewProbeLogs < 20) {
+            gViewProbeLogs++;
+            GILogMain(@"view probe: no imageView for %@", bundleID);
+        }
+        return;
+    }
+    if (imageView.image == themeImage) {
+        if (gViewProbeLogs < 10) {
+            gViewProbeLogs++;
+            GILogMain(@"view probe: image already set for %@", bundleID);
+        }
+        return;
+    }
     
     imageView.image = themeImage;
-    // No forced cornerRadius/clipsToBounds — let the system handle it.
     if (gViewProbeLogs < 40) {
         gViewProbeLogs++;
-        GILogMain(@"view serve %@", bundleID ?: @"(nil)");
+        GILogMain(@"view serve %@", bundleID);
     }
 }
 
