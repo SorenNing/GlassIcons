@@ -92,10 +92,10 @@ jobs:
           cp GIProbe.dylib probe-pkg/var/jb/Library/MobileSubstrate/DynamicLibraries/
           chmod 0755 probe-pkg/var/jb/Library/MobileSubstrate/DynamicLibraries/GIProbe.dylib
           find probe-pkg -exec touch {} +
-          dpkg-deb --root-owner-group -Zgzip --build probe-pkg com.soren.glassicons.probe_0.1_iphoneos-arm64e.deb
-          dpkg-deb -I com.soren.glassicons.probe_0.1_iphoneos-arm64e.deb | head -5
+          dpkg-deb --root-owner-group -Zgzip --build probe-pkg com.soren.glassicons.probe_0.3_iphoneos-arm64e.deb
+          dpkg-deb -I com.soren.glassicons.probe_0.3_iphoneos-arm64e.deb | head -5
       - uses: actions/upload-artifact@v4
         with:
           name: GIProbe
-          path: com.soren.glassicons.probe_0.1_iphoneos-arm64e.deb
+          path: com.soren.glassicons.probe_0.3_iphoneos-arm64e.deb
           if-no-files-found: error

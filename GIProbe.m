@@ -28,8 +28,27 @@ static BOOL GILookLikeIconPipeline(NSString *name) {
     return [GIAllowList() containsObject:name];
 }
 
+static NSString * const kProbeLog = @"/var/mobile/Library/GlassIconsProbe.log";
+
+static void GIPLog(NSString *line) {
+    @try {
+        NSFileHandle *h = [NSFileHandle fileHandleForWritingAtPath:kProbeLog];
+        if (!h) {
+            [[NSFileManager defaultManager] createFileAtPath:kProbeLog contents:nil attributes:nil];
+            h = [NSFileHandle fileHandleForWritingAtPath:kProbeLog];
+        }
+        if (h) {
+            [h seekToEndOfFile];
+            [h writeData:[[NSString stringWithFormat:@"[%@] %@\n", [NSDate date], line]
+                          dataUsingEncoding:NSUTF8StringEncoding]];
+            [h closeFile];
+        }
+    } @catch (__unused NSException *e) {}
+}
+
 static void GIWriteDump(void) {
     @try {
+        GIPLog(@"dump start");
         NSMutableString *out = [NSMutableString string];
         [out appendFormat:@"GlassIcons runtime class dump\n"
                           @"generated: %@\n"
@@ -103,11 +122,23 @@ static void GIWriteDump(void) {
 
         [out appendFormat:@"\nmatched classes: %ld\n", (long)matched];
 
-        NSString *path = @"/var/mobile/Documents/GlassIconsDump.txt";
-        [out writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:NULL];
-        NSLog(@"[GIProbe] dump written: %@ (matched %ld)", path, (long)matched);
+        NSArray<NSString *> *paths = @[
+            @"/var/mobile/Documents/GlassIconsDump.txt",
+            @"/var/jb/var/mobile/Documents/GlassIconsDump.txt",
+            @"/var/mobile/Library/GlassIconsDump.txt",
+            @"/var/jb/var/mobile/Library/GlassIconsDump.txt",
+        ];
+        for (NSString *path in paths) {
+            NSError *err = nil;
+            if ([out writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:&err]) {
+                GIPLog([NSString stringWithFormat:@"dump written: %@", path]);
+            } else {
+                GIPLog([NSString stringWithFormat:@"dump write FAILED %@: %@",
+                        path, err.localizedDescription ?: @"?"]);
+            }
+        }
     } @catch (NSException *exception) {
-        NSLog(@"[GIProbe] dump failed: %@", exception);
+        GIPLog([NSString stringWithFormat:@"dump EXCEPTION: %@", exception]);
     }
 }
 
