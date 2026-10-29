@@ -620,10 +620,16 @@ static void GIInstallCacheHooks(void) {
     // rendered by SBApplicationIcon generateIconImageWithInfo:. Wrap the orig
     // call and substitute our themed image for the app's bundle id.
     if (!gGenerateHookInstalled) {
-        Class iconCls = objc_getClass("SBApplicationIcon");
+        // SnowBoard's registry: BOTH SBApplicationIcon and SBLeafIcon expose
+        // generateIconImageWithInfo:. Home-screen apps are SBLeafIcon.
         SEL genSel = @selector(generateIconImageWithInfo:);
-        Method gm = iconCls ? class_getInstanceMethod(iconCls, genSel) : NULL;
-        if (gm) {
+        NSArray<NSString *> *genClasses = @[@"SBLeafIcon", @"SBApplicationIcon"];
+        static BOOL genHooked[2] = {NO, NO};
+        for (NSUInteger i = 0; i < genClasses.count; i++) {
+            if (genHooked[i]) continue;
+            Class iconCls = objc_getClass(genClasses[i].UTF8String);
+            Method gm = iconCls ? class_getInstanceMethod(iconCls, genSel) : NULL;
+            if (!gm) continue;
             if (!gOrigGenerateIcon) gOrigGenerateIcon = method_getImplementation(gm);
             IMP replacement = imp_implementationWithBlock(^UIImage *(id self, id info) {
                 UIImage *(*orig)(id, SEL, id) = (UIImage *(*)(id, SEL, id))gOrigGenerateIcon;
@@ -650,9 +656,10 @@ static void GIInstallCacheHooks(void) {
                 return systemImage;
             });
             method_setImplementation(gm, replacement);
-            gGenerateHookInstalled = YES;
-            GILogMain(@"generate hook active: SBApplicationIcon generateIconImageWithInfo:");
+            genHooked[i] = YES;
+            GILogMain(@"generate hook active: %@ generateIconImageWithInfo:", genClasses[i]);
         }
+        gGenerateHookInstalled = genHooked[0] && genHooked[1];
     }
 
     // One-shot probe: which candidate classes/selectors actually exist here?
