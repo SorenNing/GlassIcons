@@ -239,57 +239,6 @@ static UIImage *GITileImage(CGSize size, CGFloat scale, CGFloat factor, CGFloat 
 #pragma mark - Icon pack
 
 // Bundle id of the icon rendered by this image view (best effort across versions).
-static NSString *GIIconBundleID(UIView *view) {
-    id icon = nil;
-    @try { icon = [view valueForKey:@"icon"]; } @catch (__unused NSException *e) { return nil; }
-    if (!icon) return nil;
-
-    // Only accept reverse-DNS looking strings: display names must never match
-    // an image file, otherwise two apps can end up with each other's icon.
-    NSArray<NSString *> *keys = @[@"applicationBundleID", @"applicationBundleIdentifier",
-                                  @"bundleIdentifier", @"leafIdentifier", @"identifier"];
-    BOOL (^looksLikeBundleID)(NSString *) = ^BOOL(NSString *candidate) {
-        if (candidate.length < 4 || candidate.length > 128) return NO;
-        NSRange dot = [candidate rangeOfString:@"."];
-        if (dot.location == NSNotFound) return NO;
-        if ([candidate containsString:@"/"] || [candidate containsString:@" "]) return NO;
-        NSCharacterSet *bad = [[NSCharacterSet characterSetWithCharactersInString:
-                                @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_"]
-                               invertedSet];
-        return [candidate rangeOfCharacterFromSet:bad].location == NSNotFound;
-    };
-
-    for (NSString *key in keys) {
-        id value = nil;
-        @try { value = [icon valueForKey:key]; } @catch (__unused NSException *e) { value = nil; }
-        if (![value isKindOfClass:NSString.class]) continue;
-        NSString *candidate = (NSString *)value;
-        if ([candidate containsString:@"/"]) {
-            candidate = [candidate componentsSeparatedByString:@"/"].lastObject;
-        }
-        if (looksLikeBundleID(candidate)) return candidate;
-    }
-
-    id app = nil;
-    @try { app = [icon valueForKey:@"application"]; } @catch (__unused NSException *e) { app = nil; }
-    if (app) {
-        for (NSString *key in @[@"bundleIdentifier", @"bundleID", @"identifier"]) {
-            id bid = nil;
-            @try { bid = [app valueForKey:key]; } @catch (__unused NSException *e) { bid = nil; }
-            if ([bid isKindOfClass:NSString.class] && [(NSString *)bid length]) return bid;
-        }
-    }
-
-    static NSMutableSet<NSString *> *logged;
-    if (!logged) logged = [NSMutableSet set];
-    NSString *cls = NSStringFromClass([icon class]);
-    if (![logged containsObject:cls]) {
-        [logged addObject:cls];
-        GILogMain(@"no bundle id for icon class %@ (icon class=%@)", cls,
-                  NSStringFromClass([icon class]));
-    }
-    return nil;
-}
 
 static void GIIconPackEnsureDirectory(void) {
     NSFileManager *fm = [NSFileManager defaultManager];
@@ -398,57 +347,6 @@ static void GIIconPackReload(void) {
 }
 
 // Returns YES when a custom icon was applied (glass is skipped in that case).
-static BOOL GIApplyIconPack(UIView *view, CGRect bounds) {
-    NSString *bundleID = GIIconBundleID(view);
-    UIImage *image = GIIconPackImageForBundleID(bundleID);
-    CALayer *packLayer = objc_getAssociatedObject(view, kIconPackLayerKey);
-
-    if (!image) {
-        if (packLayer) {
-            [packLayer removeFromSuperlayer];
-            objc_setAssociatedObject(view, kIconPackLayerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        }
-        return NO;
-    }
-
-    static NSMutableSet<NSString *> *loggedIDs;
-    if (!loggedIDs) loggedIDs = [NSMutableSet set];
-    if (![loggedIDs containsObject:bundleID]) {
-        [loggedIDs addObject:bundleID];
-        GILogMain(@"iconpack match %@ -> %@", bundleID, image ? @"applied" : @"no file");
-    }
-
-    NSString *signature = [NSString stringWithFormat:@"%@|%.0fx%.0f", bundleID, bounds.size.width, bounds.size.height];
-    if (packLayer && [objc_getAssociatedObject(view, kIconPackSignatureKey) isEqualToString:signature]) {
-        packLayer.hidden = NO;
-        return YES;
-    }
-
-    if (!packLayer) {
-        packLayer = [CALayer layer];
-        packLayer.name = @"com.soren.glassicons.iconpack";
-        packLayer.contentsGravity = kCAGravityResizeAspectFill;
-        packLayer.masksToBounds = YES;
-        objc_setAssociatedObject(view, kIconPackLayerKey, packLayer, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        [view.layer addSublayer:packLayer];
-    }
-
-    CGFloat side = MIN(CGRectGetWidth(bounds), CGRectGetHeight(bounds));
-    CGRect square = CGRectMake(CGRectGetMidX(bounds) - side * 0.5,
-                               CGRectGetMinY(bounds),
-                               side, side);
-    [CATransaction begin];
-    [CATransaction setDisableActions:YES];
-    packLayer.contents = (__bridge id)image.CGImage;
-    packLayer.contentsScale = image.scale;
-    packLayer.frame = square;
-    packLayer.cornerRadius = side * 0.225;
-    packLayer.hidden = NO;
-    [CATransaction commit];
-
-    objc_setAssociatedObject(view, kIconPackSignatureKey, signature, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    return YES;
-}
 
 static void GIUpdateOverlay(UIView *view) {
     if (!view || !view.layer || CGRectIsEmpty(view.bounds)) return;
@@ -466,16 +364,6 @@ static void GIUpdateOverlay(UIView *view) {
     }
 
     CGRect bounds = view.bounds;
-
-    // Custom icon pack takes precedence and is shown as-is (no glass for now).
-    if (GIApplyIconPack(view, bounds)) {
-        if (overlay) {
-            [overlay removeFromSuperlayer];
-            objc_setAssociatedObject(view, kGlassOverlayKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            objc_setAssociatedObject(view, kGlassSignatureKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        }
-        return;
-    }
 
     if (gIntensity <= 0.001) {
         if (overlay) {
@@ -533,20 +421,25 @@ static void GIHookedLayoutSubviews(UIView *self, SEL _cmd) {
 
 #pragma mark - Icon image cache hooks (data layer, SnowBoard-style)
 
-static IMP gCacheOrigImageForIcon = NULL;
-static IMP gCacheOrigCachedImageForIcon = NULL;
+// SnowBoard's approach verbatim: hook the icon image caches. When SpringBoard
+// asks for an icon image, hand back the themed PNG; otherwise pass through.
+// SBHIconImageCache covers home screen icons; Spotlight and folders use the
+// same class family. Also hooks SBIconImageCache/SBFolderIconImageCache when
+// present for full coverage.
+
+static IMP gOrigImageForIcon = NULL;
+static IMP gOrigCachedImageForIcon = NULL;
+static NSInteger gCacheServeCount = 0;
 
 static UIImage *GIThemedImageForBundleID(NSString *bundleID) {
     if (!bundleID.length) return nil;
     return GIIconPackImageForBundleID(bundleID);
 }
 
-// Interposed below via method exchange on several cache classes; each returns
-// the themed image when we have one, else the original result.
-static UIImage *GICacheImageFromIcon(id icon, NSString *cacheClass __unused) {
+static UIImage *GICacheImageFromIcon(id icon) {
     if (!icon || !gIconPackEnabled) return nil;
     NSString *bundleID = nil;
-    for (NSString *key in @[@"applicationBundleID", @"bundleIdentifier", @"leafIdentifier", @"identifier"]) {
+    for (NSString *key in @[@"applicationBundleID", @"bundleIdentifier"]) {
         id value = nil;
         @try { value = [icon valueForKey:key]; } @catch (__unused NSException *e) { value = nil; }
         if ([value isKindOfClass:NSString.class] && [(NSString *)value length]) {
@@ -555,60 +448,45 @@ static UIImage *GICacheImageFromIcon(id icon, NSString *cacheClass __unused) {
         }
     }
     if (!bundleID.length) return nil;
-    UIImage *themed = GIThemedImageForBundleID(bundleID);
-    if (themed && ![themed isKindOfClass:UIImage.class]) themed = nil;
-    return themed;
+    return GIThemedImageForBundleID(bundleID);
 }
 
 static void GIInstallCacheHooks(void) {
     SEL selImage = @selector(imageForIcon:);
     SEL selCached = @selector(cachedImageForIcon:);
 
-    NSArray<NSString *> *cacheClasses = @[@"SBIconImageCache", @"SBHIconImageCache",
-                                          @"SBFolderIconImageCache"];
+    NSArray<NSString *> *cacheClasses = @[@"SBHIconImageCache", @"SBIconImageCache", @"SBFolderIconImageCache"];
     for (NSString *className in cacheClasses) {
         Class cls = objc_getClass(className.UTF8String);
-        if (!cls) continue;
+        if (!cls) { GILogMain(@"cache class %@ not found (skipped)", className); continue; }
+
         Method m = class_getInstanceMethod(cls, selImage);
-        if (m && !gCacheOrigImageForIcon) {
-            gCacheOrigImageForIcon = method_getImplementation(m);
+        if (m) {
             IMP themed = imp_implementationWithBlock(^UIImage *(id self, id icon) {
-                UIImage *themed = GICacheImageFromIcon(icon, className);
+                UIImage *themed = GICacheImageFromIcon(icon);
                 if (themed) {
-                    static NSInteger served = 0;
-                    if (served++ < 40) {
-                        GILogMain(@"cache[%@] served themed image (count %ld)", className, (long)served);
+                    if (++gCacheServeCount <= 60) {
+                        GILogMain(@"cache serve #%ld themed image", (long)gCacheServeCount);
                     }
                     return themed;
                 }
-                UIImage *(*orig)(id, SEL, id) = (UIImage *(*)(id, SEL, id))gCacheOrigImageForIcon;
-                UIImage *original = orig(self, selImage, icon);
-                static NSInteger passthrough = 0;
-                if (passthrough++ < 25) {
-                    id bid = nil;
-                    @try { bid = [icon valueForKey:@"applicationBundleID"]; } @catch (__unused NSException *e) { bid = nil; }
-                    if (![bid isKindOfClass:NSString.class]) {
-                        @try { bid = [icon valueForKey:@"bundleIdentifier"]; } @catch (__unused NSException *e) { bid = nil; }
-                    }
-                    GILogMain(@"cache[%@] passthrough %@ (no pack file)", className,
-                              [bid isKindOfClass:NSString.class] ? bid : @"<unknown>");
-                }
-                return original;
+                UIImage *(*orig)(id, SEL, id) = (UIImage *(*)(id, SEL, id))gOrigImageForIcon;
+                return orig(self, selImage, icon);
             });
             method_setImplementation(m, themed);
-            GILogMain(@"cache hook installed on %@ imageForIcon:", className);
+            GILogMain(@"cache hook active: %@ imageForIcon:", className);
         }
+
         Method m2 = class_getInstanceMethod(cls, selCached);
-        if (m2 && !gCacheOrigCachedImageForIcon) {
-            gCacheOrigCachedImageForIcon = method_getImplementation(m2);
+        if (m2) {
             IMP themed2 = imp_implementationWithBlock(^UIImage *(id self, id icon) {
-                UIImage *themed = GICacheImageFromIcon(icon, className);
+                UIImage *themed = GICacheImageFromIcon(icon);
                 if (themed) return themed;
-                UIImage *(*orig)(id, SEL, id) = (UIImage *(*)(id, SEL, id))gCacheOrigCachedImageForIcon;
+                UIImage *(*orig)(id, SEL, id) = (UIImage *(*)(id, SEL, id))gOrigCachedImageForIcon;
                 return orig(self, selCached, icon);
-            });  // cached: same serve logging as above is unnecessary (imageForIcon dominates)
+            });
             method_setImplementation(m2, themed2);
-            GILogMain(@"cache hook installed on %@ cachedImageForIcon:", className);
+            GILogMain(@"cache hook active: %@ cachedImageForIcon:", className);
         }
     }
 }
