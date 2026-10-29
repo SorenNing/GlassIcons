@@ -8,18 +8,24 @@
 // and touches NO SpringBoard logic — if anything goes wrong it can only fail
 // to write the file.
 
-static NSArray<NSString *> *GIPrefixes(void) {
-    return @[@"SBIcon", @"SBApplicationIcon", @"SBLeafIcon", @"SBApplication",
-             @"SBLiveIcon", @"SBHIcon", @"SnowBoard", @"SBDockIcon",
-             @"SBFolderIcon", @"SBIconImage", @"SBIconBadge", @"SBIconModel",
-             @"SBIconManager", @"SBIconController"];
+
+// Explicit allow-list instead of prefix-scanning every class in the process:
+// prefix matching during early startup was the respring-loop suspect.
+static NSArray<NSString *> *GIAllowList(void) {
+    return @[
+        @"SBIconImageView", @"SBIconView", @"SBLeafIcon", @"SBApplicationIcon",
+        @"SBApplication", @"SBHIconImageCache", @"SBFolderIconImageCache",
+        @"SBIconImageCrossfadeView", @"SBLiveIconImageView", @"SBFolderIconView",
+        @"SBFolderIconImageView", @"SBClockApplicationIconImageView",
+        @"SBHClockApplicationIconImageView", @"SBIconModel", @"SBIconController",
+        @"SBIconBadgeView", @"SBIconListGridView", @"SBIconImageCache",
+        @"SBFolderIconBackgroundView", @"SBIconLocationModel",
+        @"SBHLibraryAdditionalItemsIndicatorIcon", @"SBBookmarkIcon",
+    ];
 }
 
 static BOOL GILookLikeIconPipeline(NSString *name) {
-    for (NSString *prefix in GIPrefixes()) {
-        if ([name hasPrefix:prefix]) return YES;
-    }
-    return NO;
+    return [GIAllowList() containsObject:name];
 }
 
 static void GIWriteDump(void) {
@@ -70,7 +76,8 @@ static void GIWriteDump(void) {
                 NSMutableString *block = [NSMutableString string];
                 [block appendFormat:@"== %@ ==\n", name];
                 NSInteger kept = 0;
-                for (unsigned int i = 0; i < count; i++) {
+                unsigned int cap = count < 400 ? count : 400;
+                for (unsigned int i = 0; i < cap; i++) {
                     SEL sel = method_getName(methods[i]);
                     NSString *selector = NSStringFromSelector(sel);
                     BOOL relevant = NO;
@@ -108,7 +115,8 @@ __attribute__((constructor)) static void GIProbeEntry(void) {
     if (![NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.springboard"]) return;
 
     // Wait well past the respring storm, then dump once on a background queue.
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(25.0 * NSEC_PER_SEC)),
+    // 45s: well after launch, and only touch classes on the allow-list.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(45.0 * NSEC_PER_SEC)),
                    dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         GIWriteDump();
     });

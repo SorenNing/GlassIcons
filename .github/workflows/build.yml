@@ -75,7 +75,7 @@ jobs:
           cat > "$D/control" <<'CTL'
           Package: com.soren.glassicons.probe
           Name: GlassIcons Probe
-          Version: 0.1
+          Version: 0.2
           Architecture: iphoneos-arm64e
           Description: One-shot icon pipeline class dumper (diagnostic only)
           Maintainer: Ning
