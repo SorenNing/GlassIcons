@@ -699,14 +699,6 @@ static IMP gOrigProvider2 = NULL;
 static BOOL gProvider1Installed = NO;
 static BOOL gProvider2Installed = NO;
 
-static void GIPatchIfPresent(Class cls, SEL sel, IMP *orig, BOOL *installed, NSString *label) {
-    if (!cls || *installed) return;
-    Method m = class_getInstanceMethod(cls, sel);
-    if (!m) return;
-    if (!*orig) *orig = method_getImplementation(m);
-    *installed = YES;
-    GILogMain(@"provider hook active: %@ %@", label, NSStringFromSelector(sel));
-}
 
 static void GIInstallSnowBoardProviders(void) {
     Class appIconCls = objc_getClass("SBApplicationIcon");
