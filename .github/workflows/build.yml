@@ -60,7 +60,8 @@ jobs:
       - name: Build probe dylib
         run: |
           set -euo pipefail
-          xcrun -sdk "$THEOS/sdks/iPhoneOS16.5.sdk" clang -arch arm64e -arch arm64 \
+          SDK="$RUNNER_TEMP/theos/sdks/iPhoneOS16.5.sdk"
+          xcrun -sdk "$SDK" clang -arch arm64e -arch arm64 \
             -fobjc-arc -fmodules -shared -o GIProbe.dylib GIProbe.m \
             -framework Foundation -framework UIKit \
             -install_name /var/jb/Library/MobileSubstrate/DynamicLibraries/GIProbe.dylib
