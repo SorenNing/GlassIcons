@@ -471,6 +471,7 @@ static UIImage *GICacheImageFromIcon(id icon) {
 }
 
 static IMP gOrigImageForBundleID = NULL;
+static BOOL gBundleIDHookInstalled = NO;
 
 static void GIInstallCacheHooks(void) {
     SEL selImage = @selector(imageForIcon:);
