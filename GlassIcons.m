@@ -33,7 +33,7 @@ static const void *kIconPackLayerKey = &kIconPackLayerKey;
 static const void *kIconPackSignatureKey = &kIconPackSignatureKey;
 static NSString * const kIconPackDir = @"/var/mobile/Library/GlassIcons/Icons";
 
-static void GILogMain(NSString *format, ...) {
+void GILogMain(NSString *format, ...) {
     va_list args;
     va_start(args, format);
     NSString *message = [[NSString alloc] initWithFormat:format arguments:args];
@@ -307,7 +307,8 @@ static UIImage *GIIconPackImageForBundleID(NSString *bundleID) {
 static void GIUpdateOverlay(UIView *view);
 static void GIInstallCacheHooks(void);
 static void GIInstallSnowBoardProviders(void);
-static void GIInstallUIImageIconHooks(void);
+extern void GIIconEngineInstall(void);
+extern void GIIconEngineReload(void);
 
 #pragma mark - Whole-tree scan
 
@@ -353,7 +354,7 @@ static void GIIconPackReload(void) {
                                           ? CFBooleanGetValue((CFBooleanRef)enabledRef) : YES) : YES;
         if (enabledRef) CFRelease(enabledRef);
         gIconPackEnabled = userEnabled && count > 0;
-        GIInstallUIImageIconHooks();
+        GIIconEngineReload();
         GIIconPackClearCache();
         for (UIView *view in [gTrackedViews allObjects]) {
             objc_setAssociatedObject(view, kIconPackSignatureKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -550,149 +551,6 @@ static UIImage *GICacheImageFromIcon(id icon) {
     }
     if (!bundleID.length) return nil;
     return GIThemedImageForBundleID(bundleID);
-}
-
-#pragma mark - IconBundles UIImage entry point
-
-// IconBundles replaces the UIImage class methods used by older SpringBoard
-// versions. These are class methods, so the hook target is UIImage's metaclass,
-// not SBApplication or SBApplicationIcon.
-static IMP gOrigUIImageIconWithRole = NULL;
-static IMP gOrigUIImageIcon = NULL;
-static BOOL gUIImageIconWithRoleHookInstalled = NO;
-static BOOL gUIImageIconHookInstalled = NO;
-static NSUInteger gUIImageIconCallCount = 0;
-static NSUInteger gUIImageIconHitCount = 0;
-static UIImage *GIThemedImageForBundleID(NSString *bundleID);
-
-static UIImage *GIIconBundlesImageForBundleID(NSString *bundleID, int format, double scale) {
-    NSUInteger calls = __atomic_add_fetch(&gUIImageIconCallCount, 1, __ATOMIC_RELAXED);
-    if (calls == 1) {
-        GILogMain(@"IconBundles UIImage entry reached: %@ format=%d scale=%.2f",
-                  bundleID ?: @"<nil>", format, scale);
-    }
-    if (!gIconPackEnabled || !bundleID.length) return nil;
-    UIImage *image = GIThemedImageForBundleID(bundleID);
-    if (!image) return nil;
-
-    NSUInteger hits = __atomic_add_fetch(&gUIImageIconHitCount, 1, __ATOMIC_RELAXED);
-    if (hits <= 5) {
-        GILogMain(@"IconBundles UIImage serve #%lu %@ format=%d scale=%.2f",
-                  (unsigned long)hits, bundleID, format, scale);
-    }
-    return image;
-}
-
-static UIImage *GIUIImageIconWithRoleHook(id self, SEL cmd, NSString *bundleID,
-                                           NSString *roleIdentifier, int format, float scale) {
-    UIImage *themed = GIIconBundlesImageForBundleID(bundleID, format, scale);
-    if (themed) return themed;
-
-    UIImage *(*orig)(id, SEL, NSString *, NSString *, int, float) =
-        (UIImage *(*)(id, SEL, NSString *, NSString *, int, float))gOrigUIImageIconWithRole;
-    return orig ? orig(self, cmd, bundleID, roleIdentifier, format, scale) : nil;
-}
-
-static UIImage *GIUIImageIconHook(id self, SEL cmd, NSString *bundleID,
-                                  int format, float scale) {
-    UIImage *themed = GIIconBundlesImageForBundleID(bundleID, format, scale);
-    if (themed) return themed;
-
-    UIImage *(*orig)(id, SEL, NSString *, int, float) =
-        (UIImage *(*)(id, SEL, NSString *, int, float))gOrigUIImageIcon;
-    return orig ? orig(self, cmd, bundleID, format, scale) : nil;
-}
-
-static UIImage *GIUIImageIconWithRoleHookDouble(id self, SEL cmd, NSString *bundleID,
-                                                 NSString *roleIdentifier, int format,
-                                                 double scale) {
-    UIImage *themed = GIIconBundlesImageForBundleID(bundleID, format, scale);
-    if (themed) return themed;
-
-    UIImage *(*orig)(id, SEL, NSString *, NSString *, int, double) =
-        (UIImage *(*)(id, SEL, NSString *, NSString *, int, double))gOrigUIImageIconWithRole;
-    return orig ? orig(self, cmd, bundleID, roleIdentifier, format, scale) : nil;
-}
-
-static UIImage *GIUIImageIconHookDouble(id self, SEL cmd, NSString *bundleID,
-                                        int format, double scale) {
-    UIImage *themed = GIIconBundlesImageForBundleID(bundleID, format, scale);
-    if (themed) return themed;
-
-    UIImage *(*orig)(id, SEL, NSString *, int, double) =
-        (UIImage *(*)(id, SEL, NSString *, int, double))gOrigUIImageIcon;
-    return orig ? orig(self, cmd, bundleID, format, scale) : nil;
-}
-
-static BOOL GISelectorUsesDoubleScale(Class meta, SEL selector, unsigned int argumentIndex) {
-    Method method = meta ? class_getInstanceMethod(meta, selector) : NULL;
-    if (!method) return NO;
-    char *type = method_copyArgumentType(method, argumentIndex);
-    BOOL isDouble = type && type[0] == 'd';
-    free(type);
-    return isDouble;
-}
-
-static BOOL GIInstallUIImageClassMethod(SEL selector, IMP replacement, IMP *original) {
-    Class meta = object_getClass(UIImage.class);
-    Method inherited = meta ? class_getInstanceMethod(meta, selector) : NULL;
-    if (!inherited) return NO;
-
-    const char *types = method_getTypeEncoding(inherited);
-    IMP previous = method_getImplementation(inherited);
-
-    // Add an override on UIImage's metaclass when the selector is inherited;
-    // this avoids modifying an unrelated superclass method.
-    if (class_addMethod(meta, selector, replacement, types)) {
-        *original = previous;
-        return YES;
-    }
-
-    Method own = class_getInstanceMethod(meta, selector);
-    if (!own) return NO;
-    previous = method_getImplementation(own);
-    if (previous == replacement) return YES;
-    *original = previous;
-    method_setImplementation(own, replacement);
-    return YES;
-}
-
-static void GIInstallUIImageIconHooks(void) {
-    static BOOL logged = NO;
-    Class meta = object_getClass(UIImage.class);
-    SEL roleSelector = NSSelectorFromString(
-        @"_applicationIconImageForBundleIdentifier:roleIdentifier:format:scale:");
-    SEL selector = NSSelectorFromString(
-        @"_applicationIconImageForBundleIdentifier:format:scale:");
-
-    if (!gUIImageIconWithRoleHookInstalled) {
-        BOOL useDouble = GISelectorUsesDoubleScale(meta, roleSelector, 5);
-        IMP replacement = useDouble ? (IMP)GIUIImageIconWithRoleHookDouble
-                                    : (IMP)GIUIImageIconWithRoleHook;
-        gUIImageIconWithRoleHookInstalled = GIInstallUIImageClassMethod(
-            roleSelector, replacement, &gOrigUIImageIconWithRole);
-        GILogMain(@"IconBundles UIImage role selector %@: %@ (scale=%@)",
-                  NSStringFromSelector(roleSelector),
-                  gUIImageIconWithRoleHookInstalled ? @"HOOKED" : @"MISSING",
-                  useDouble ? @"double" : @"float");
-    }
-    if (!gUIImageIconHookInstalled) {
-        BOOL useDouble = GISelectorUsesDoubleScale(meta, selector, 4);
-        IMP replacement = useDouble ? (IMP)GIUIImageIconHookDouble
-                                    : (IMP)GIUIImageIconHook;
-        gUIImageIconHookInstalled = GIInstallUIImageClassMethod(
-            selector, replacement, &gOrigUIImageIcon);
-        GILogMain(@"IconBundles UIImage selector %@: %@ (scale=%@)",
-                  NSStringFromSelector(selector),
-                  gUIImageIconHookInstalled ? @"HOOKED" : @"MISSING",
-                  useDouble ? @"double" : @"float");
-    }
-    if (!logged) {
-        logged = YES;
-        GILogMain(@"IconBundles UIImage summary: role=%@ simple=%@",
-                  gUIImageIconWithRoleHookInstalled ? @"HOOKED" : @"MISSING",
-                  gUIImageIconHookInstalled ? @"HOOKED" : @"MISSING");
-    }
 }
 
 static IMP gOrigImageForBundleID = NULL;
@@ -977,9 +835,13 @@ __attribute__((constructor)) static void GIInitialize(void) {
     gIconPackEnabled = userEnabled && packCount > 0;
     GILogMain(@"init: iconpack dir contents = %lu (userEnabled=%d, enabled=%d)",
               (unsigned long)packCount, userEnabled, gIconPackEnabled);
-    // Install the IconBundles-compatible UIImage class hooks even when the
-    // directory is empty; empty/missing entries always fall back to UIKit.
-    GIInstallUIImageIconHooks();
+    // Icon replacement engine (ported from SnowBoardRecovered 1.0): hooks
+    // SBHIconImageCache + icon layout classes and actively refreshes visible
+    // icons. Glass overlay and badges remain untouched.
+    if (gIconPackEnabled) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ GIIconEngineInstall(); });
+    }
     GIReadPreferences();
     GIReadDisabledState();
     GIInstallHook();
