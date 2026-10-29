@@ -431,9 +431,28 @@ static IMP gOrigImageForIcon = NULL;
 static IMP gOrigCachedImageForIcon = NULL;
 static NSInteger gCacheServeCount = 0;
 
+// SnowBoard hands the renderer a properly scaled square image; a raw
+// 1024pt@1x PNG blows up the icon layout. Resize to the system icon size
+// at 3x and stamp the scale so the cache gets a usable image.
 static UIImage *GIThemedImageForBundleID(NSString *bundleID) {
     if (!bundleID.length) return nil;
-    return GIIconPackImageForBundleID(bundleID);
+    UIImage *raw = GIIconPackImageForBundleID(bundleID);
+    if (!raw) return nil;
+
+    CGFloat iconSize = 60.0;   // SBIconImageView default visible size
+    CGFloat scale = 3.0;
+    if (raw.size.width <= iconSize && raw.size.height <= iconSize && raw.scale == scale) {
+        return raw;
+    }
+
+    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+    format.scale = scale;
+    format.opaque = NO;
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(iconSize, iconSize) format:format];
+    UIImage *out = [renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *ctx) {
+        [raw drawInRect:CGRectMake(0, 0, iconSize, iconSize)];
+    }];
+    return out;
 }
 
 static UIImage *GICacheImageFromIcon(id icon) {
