@@ -24,9 +24,6 @@ static NSArray<NSString *> *GIAllowList(void) {
     ];
 }
 
-static BOOL GILookLikeIconPipeline(NSString *name) {
-    return [GIAllowList() containsObject:name];
-}
 
 static NSString * const kProbeLog = @"/var/mobile/Library/GlassIconsProbe.log";
 
@@ -56,68 +53,40 @@ static void GIWriteDump(void) {
          [NSDate date],
          [NSBundle mainBundle].infoDictionary[@"CFBundleVersion"] ?: @"?"];
 
-        NSArray<NSString *> *selectorNames = @[
-            @"imageForIcon:", @"cachedImageForIcon:", @"realImageForIcon:",
-            @"iconImageWithInfo:", @"iconImageForIcon:image:",
-            @"generateIconImage:", @"generateIconImageWithInfo:",
-            @"genericIconImageWithInfo:", @"unmaskedIconImageWithInfo:",
-            @"getUnmaskedIconImage:", @"imageForBundleIdentifier:withScale:",
-            @"imageForBundleIdentifier:withScale:withOverrides:",
-            @"_applicationIconImageForBundleIdentifier:format:scale:",
-            @"_applicationIconImageForBundleIdentifier:format:",
-            @"imageForApplicationIconFormat:activityCategory:",
-            @"_iconForResourceProxy:format:",
-            @"_iconForResourceProxy:variant:options:variantsScale:",
-            @"iconForBundleIdentifier:", @"appIconForBundleIdentifier:",
-            @"_notifyImageDidUpdate", @"setIconImage:", @"setImage:",
-        ];
 
-        NSInteger classCount = objc_getClassList(NULL, 0);
-        if (classCount <= 0) return;
-        Class *buffer = (Class *)malloc(sizeof(Class) * classCount);
-        if (!buffer) return;
-        classCount = objc_getClassList(buffer, classCount);
-
-        NSMutableArray<Class> *all = [NSMutableArray arrayWithCapacity:classCount];
-        for (NSInteger i = 0; i < classCount; i++) [all addObject:buffer[i]];
-        free(buffer);
-
+        // Direct lookups only: objc_getClassList + copyMethodList across the whole
+        // process crashed SpringBoard (log stopped right after "dump start").
         NSInteger matched = 0;
-        for (Class cls in all) {
-            @try {
-                NSString *name = NSStringFromClass(cls);
-                if (!GILookLikeIconPipeline(name)) continue;
-
-                unsigned int count = 0;
-                Method *methods = class_copyMethodList(cls, &count);
-                if (!methods) continue;
-
-                NSMutableString *block = [NSMutableString string];
-                [block appendFormat:@"== %@ ==\n", name];
-                NSInteger kept = 0;
-                unsigned int cap = count < 400 ? count : 400;
-                for (unsigned int i = 0; i < cap; i++) {
-                    SEL sel = method_getName(methods[i]);
-                    NSString *selector = NSStringFromSelector(sel);
-                    BOOL relevant = NO;
-                    for (NSString *candidate in selectorNames) {
-                        if ([selector isEqualToString:candidate]) { relevant = YES; break; }
-                    }
-                    if (!relevant &&
-                        ![selector containsString:@"mage"] &&
-                        ![selector.lowercaseString containsString:@"icon"]) continue;
-                    const char *type = method_getTypeEncoding(methods[i]);
-                    [block appendFormat:@"  -%@  (%s)\n", selector, type ?: "?"];
-                    kept++;
-                }
-                free(methods);
-                if (kept > 0) {
-                    [out appendString:block];
-                    matched++;
-                }
-            } @catch (__unused NSException *e) {
+        for (NSString *name in GIAllowList()) {
+            Class cls = objc_getClass(name.UTF8String);
+            if (!cls) {
+                [out appendFormat:@"== %@ == (NOT FOUND)\n\n", name];
                 continue;
             }
+
+            unsigned int count = 0;
+            Method *methods = class_copyMethodList(cls, &count);
+            if (!methods) {
+                [out appendFormat:@"== %@ == (no methods)\n\n", name];
+                continue;
+            }
+
+            NSMutableString *block = [NSMutableString string];
+            [block appendFormat:@"== %@ ==\n", name];
+            NSInteger kept = 0;
+            unsigned int cap = count < 500 ? count : 500;
+            for (unsigned int i = 0; i < cap; i++) {
+                const char *selName = sel_getName(method_getName(methods[i]));
+                if (!selName) continue;
+                NSString *selector = [NSString stringWithUTF8String:selName] ?: @"?";
+                const char *type = method_getTypeEncoding(methods[i]);
+                [block appendFormat:@"  -%@  (%s)\n", selector, type ?: "?"];
+                kept++;
+            }
+            free(methods);
+            [block appendFormat:@"  [%ld methods]\n\n", (long)kept];
+            [out appendString:block];
+            matched++;
         }
 
         [out appendFormat:@"\nmatched classes: %ld\n", (long)matched];
