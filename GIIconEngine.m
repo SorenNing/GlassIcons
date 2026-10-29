@@ -176,8 +176,10 @@ static id GIIconFromHost(id host) {
     // Fallback: traverse ivars.
     for (NSString *key in @[@"_icon", @"icon", @"representedIcon", @"applicationIcon"]) {
         id candidate = [host valueForKey:key];
-        if ([candidate respondsToSelector:@selector(applicationBundleID)])
-            return [candidate applicationBundleID];
+        if ([candidate respondsToSelector:@selector(applicationBundleID)]) {
+            id bid = ((id (*)(id, SEL))objc_msgSend)(candidate, @selector(applicationBundleID));
+            if ([bid isKindOfClass:[NSString class]] && [(NSString *)bid length] > 0) return bid;
+        }
         if ([candidate isKindOfClass:[NSString class]] && [(NSString *)candidate length] > 0)
             return candidate;
     }
@@ -185,7 +187,8 @@ static id GIIconFromHost(id host) {
 }
 
 static void GIApplyPassiveImage(id host) {
-    NSString *bundleID = [GIIconFromHost(host) isKindOfClass:[NSString class]] ? (NSString *)GIIconFromHost(host) : nil;
+    id bid = GIIconFromHost(host);
+    NSString *bundleID = [bid isKindOfClass:[NSString class]] ? (NSString *)bid : nil;
     UIImage *themeImage = GIEngineImageForBundleID(bundleID);
     if (!themeImage) return;
     
