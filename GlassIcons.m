@@ -291,6 +291,7 @@ static UIImage *GIIconPackImageForBundleID(NSString *bundleID) {
 
 static void GIUpdateOverlay(UIView *view);
 static void GIInstallCacheHooks(void);
+static void GIInstallSnowBoardProviders(void);
 
 #pragma mark - Whole-tree scan
 
@@ -336,7 +337,7 @@ static void GIIconPackReload(void) {
                                           ? CFBooleanGetValue((CFBooleanRef)enabledRef) : YES) : YES;
         if (enabledRef) CFRelease(enabledRef);
         gIconPackEnabled = userEnabled && count > 0;
-        if (gIconPackEnabled) GIInstallCacheHooks();
+        if (gIconPackEnabled) { GIInstallCacheHooks(); GIInstallSnowBoardProviders(); }
         [gIconPackCache removeAllObjects];
         for (UIView *view in [gTrackedViews allObjects]) {
             objc_setAssociatedObject(view, kIconPackSignatureKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -685,6 +686,89 @@ static void GIInstallCacheHooks(void) {
     }
 }
 
+
+#pragma mark - SnowBoard icon providers (faithful copy of its fetch points)
+
+// SnowBoard's binary shows it fetches home-screen icons via these providers
+// (names taken verbatim from SnowBoardBase): imageForApplicationIconFormat:
+// activityCategory: and _applicationIconImageForBundleIdentifier:format:scale:.
+// Hook whichever exists, wrap orig, substitute the themed image.
+
+static IMP gOrigProvider1 = NULL;
+static IMP gOrigProvider2 = NULL;
+static BOOL gProvider1Installed = NO;
+static BOOL gProvider2Installed = NO;
+
+static void GIPatchIfPresent(Class cls, SEL sel, IMP *orig, BOOL *installed, NSString *label) {
+    if (!cls || *installed) return;
+    Method m = class_getInstanceMethod(cls, sel);
+    if (!m) return;
+    if (!*orig) *orig = method_getImplementation(m);
+    *installed = YES;
+    GILogMain(@"provider hook active: %@ %@", label, NSStringFromSelector(sel));
+}
+
+static void GIInstallSnowBoardProviders(void) {
+    Class appIconCls = objc_getClass("SBApplicationIcon");
+    Class appCls = objc_getClass("SBApplication");
+
+    SEL sel1 = @selector(imageForApplicationIconFormat:activityCategory:);
+    Method m1 = appIconCls ? class_getInstanceMethod(appIconCls, sel1) : NULL;
+    if (m1 && !gProvider1Installed) {
+        if (!gOrigProvider1) gOrigProvider1 = method_getImplementation(m1);
+        UIImage *(*orig1)(id, SEL, id, id) = (UIImage *(*)(id, SEL, id, id))gOrigProvider1;
+        IMP themed1 = imp_implementationWithBlock(^UIImage *(id self, id format, id category) {
+            NSString *bundleID = nil;
+            for (NSString *key in @[@"applicationBundleID", @"bundleIdentifier"]) {
+                id value = nil;
+                @try { value = [self valueForKey:key]; } @catch (__unused NSException *e) { value = nil; }
+                if ([value isKindOfClass:NSString.class] && [(NSString *)value length]) {
+                    bundleID = (NSString *)value;
+                    break;
+                }
+            }
+            UIImage *themed = gIconPackEnabled && bundleID ? GIIconPackImageForBundleID(bundleID) : nil;
+            if (themed) {
+                GILogMain(@"provider1 serve %@", bundleID);
+                return themed;
+            }
+            return orig1(self, sel1, format, category);
+        });
+        method_setImplementation(m1, themed1);
+        gProvider1Installed = YES;
+        GILogMain(@"provider hook active: SBApplicationIcon imageForApplicationIconFormat:activityCategory:");
+    }
+
+    SEL sel2 = NSSelectorFromString(@"_applicationIconImageForBundleIdentifier:format:scale:");
+    Method m2 = appCls ? class_getInstanceMethod(appCls, sel2) : NULL;
+    if (m2 && !gProvider2Installed) {
+        if (!gOrigProvider2) gOrigProvider2 = method_getImplementation(m2);
+        UIImage *(*orig2)(id, SEL, NSString *, id, CGFloat) = (UIImage *(*)(id, SEL, NSString *, id, CGFloat))gOrigProvider2;
+        IMP themed2 = imp_implementationWithBlock(^UIImage *(id self, NSString *bundleID, id format, CGFloat scale) {
+            UIImage *themed = gIconPackEnabled ? GIIconPackImageForBundleID(bundleID) : nil;
+            if (themed) {
+                GILogMain(@"provider2 serve %@", bundleID);
+                return themed;
+            }
+            return orig2(self, sel2, bundleID, format, scale);
+        });
+        method_setImplementation(m2, themed2);
+        gProvider2Installed = YES;
+        GILogMain(@"provider hook active: SBApplication _applicationIconImageForBundleIdentifier:format:scale:");
+    }
+
+    // Log existence once for diagnosis even when hooks can't install.
+    static BOOL logged = NO;
+    if (!logged) {
+        logged = YES;
+        GILogMain(@"provider probe: SBApplicationIcon=%@ SBApplication=%@ sel1=%@ sel2=%@",
+                  appIconCls ? @"EXISTS" : @"missing",
+                  appCls ? @"EXISTS" : @"missing",
+                  (appIconCls && class_getInstanceMethod(appIconCls, sel1)) ? @"YES" : @"no",
+                  (appCls && class_getInstanceMethod(appCls, sel2)) ? @"YES" : @"no");
+    }
+}
+
 static void GIInstallHook(void) {
     if (gInstalling || gHookInstalled) return;
     gInstalling = YES;
@@ -761,7 +845,10 @@ __attribute__((constructor)) static void GIInitialize(void) {
               (unsigned long)packCount, userEnabled, gIconPackEnabled);
     if (gIconPackEnabled) {
         // Cache-layer hooks must install early, before the icon image caches fill.
-        dispatch_async(dispatch_get_main_queue(), ^{ GIInstallCacheHooks(); });
+        dispatch_async(dispatch_get_main_queue(), ^{
+            GIInstallCacheHooks();
+            GIInstallSnowBoardProviders();
+        });
     }
     GIReadPreferences();
     GIReadDisabledState();
