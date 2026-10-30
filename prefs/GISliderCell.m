@@ -1,4 +1,5 @@
 #import "GISliderCell.h"
+#import <math.h>
 
 static double GICellNumber(id value, double fallback) {
     return [value respondsToSelector:@selector(doubleValue)] ? [value doubleValue] : fallback;
@@ -24,6 +25,7 @@ static double GICellNumber(id value, double fallback) {
         _valueLabel.textColor = UIColor.labelColor;
         _valueLabel.textAlignment = NSTextAlignmentRight;
         [self.contentView addSubview:_valueLabel];
+        [self glassSyncValue];
     }
     return self;
 }
@@ -40,8 +42,9 @@ static double GICellNumber(id value, double fallback) {
         if (value) {
             if (CFGetTypeID(value) == CFNumberGetTypeID()) {
                 double number = fallback;
-                CFNumberGetValue(value, kCFNumberDoubleType, &number);
-                result = number;
+                if (CFNumberGetValue((CFNumberRef)value, kCFNumberDoubleType, &number) && isfinite(number)) {
+                    result = number;
+                }
             }
             CFRelease(value);
         }
@@ -54,10 +57,15 @@ static double GICellNumber(id value, double fallback) {
 - (void)glassWritePreference:(double)number {
     @try {
         NSString *key = [self.specifier propertyForKey:@"key"];
-        if (!key.length) return;
+        if (!key.length || !isfinite(number)) return;
         NSString *domain = [self.specifier propertyForKey:@"defaults"] ?: @"com.soren.glassicons";
         CFPreferencesSetAppValue((__bridge CFStringRef)key, (__bridge CFPropertyListRef)@(number), (__bridge CFStringRef)domain);
-        CFPreferencesAppSynchronize((__bridge CFStringRef)domain);
+        if (!CFPreferencesAppSynchronize((__bridge CFStringRef)domain)) {
+            _valueLabel.text = @"未确认保存";
+            _valueLabel.accessibilityLabel = @"无法确认保存，请检查设置权限并重新打开设置核对";
+            return;
+        }
+        _valueLabel.accessibilityLabel = nil;
         CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
                                              CFSTR("com.soren.glassicons.changed"), NULL, NULL, true);
     } @catch (__unused NSException *e) {}

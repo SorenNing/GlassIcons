@@ -2,7 +2,7 @@
 // GlassIcons icon pack engine (SpringBoard side).
 //
 // Responsibilities:
-//   1. Build an index of /var/mobile/Library/GlassIcons/Icons/*.png keyed by bundle id.
+//   1. Index the selected icon directory's PNGs by bundle id.
 //   2. Answer "do we have a theme image for this icon?" for the view layer.
 //   3. Hook the SpringBoard image generation/caching entry points and substitute
 //      the theme image when one exists.
@@ -18,11 +18,16 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
+#import <limits.h>
+#import <string.h>
+#import <sys/stat.h>
 
 // ---------------------------------------------------------------- constants --
 
 static NSString *const kGIEngineDefaultDir = @"/var/mobile/Library/GlassIcons/Icons";
 static NSString *const kGIEngineRootHideDir = @"/var/jb/var/mobile/Library/GlassIcons/Icons";
+static NSString *const kGIEngineThemesDir = @"/var/mobile/Library/GlassIcons/Themes";
+static NSString *const kGIEngineRootHideThemesDir = @"/var/jb/var/mobile/Library/GlassIcons/Themes";
 
 static NSString *const kGIEngineLogPath = @"/var/mobile/Library/GlassIcons.log";
 
@@ -65,15 +70,71 @@ static void GILogMain(NSString *fmt, ...) {
 
 // ------------------------------------------------------------ icon directory -
 
-static NSArray<NSString *> *GIEngineIconDirs(void) {
-    NSMutableArray *dirs = [NSMutableArray arrayWithCapacity:2];
+// A preference can be edited outside Settings; accept only a single directory
+// component, using the same name rules as the theme manager. Invalid values
+// select the legacy default instead of being treated as paths.
+static BOOL GIEngineThemeNameIsSafe(NSString *name) {
+    if (![name isKindOfClass:[NSString class]] || name.length == 0) return NO;
+    if (![name isEqualToString:[name stringByTrimmingCharactersInSet:
+                               [NSCharacterSet whitespaceAndNewlineCharacterSet]]]) return NO;
+    if ([name caseInsensitiveCompare:@"Default"] == NSOrderedSame) return NO;
+    if ([name isEqualToString:@"."] || [name isEqualToString:@".."]) return NO;
+    if ([name rangeOfCharacterFromSet:
+         [NSCharacterSet characterSetWithCharactersInString:@"/\\:"]].location != NSNotFound) return NO;
+    if ([name rangeOfCharacterFromSet:[NSCharacterSet controlCharacterSet]].location != NSNotFound) return NO;
+    const char *bytes = name.fileSystemRepresentation;
+    return bytes && strlen(bytes) > 0 && strlen(bytes) <= NAME_MAX;
+}
 
-    NSFileManager *fm = [NSFileManager defaultManager];
-    if ([fm fileExistsAtPath:kGIEngineRootHideDir]) {
-        [dirs addObject:kGIEngineRootHideDir];
+// Called only while building/rebuilding the index, never per icon lookup.
+static NSString *GIEngineSelectedThemeName(void) {
+    if (!CFPreferencesAppSynchronize(CFSTR("com.soren.glassicons"))) {
+        GILogMain(@"preference synchronization failed; theme may be stale");
     }
-    [dirs addObject:kGIEngineDefaultDir];
+    CFPropertyListRef value = CFPreferencesCopyAppValue(CFSTR("IconPackTheme"),
+                                                        CFSTR("com.soren.glassicons"));
+    NSString *name = nil;
+    if (value && CFGetTypeID(value) == CFStringGetTypeID()) {
+        name = [(__bridge NSString *)value copy];
+    }
+    if (value) CFRelease(value);
+    return GIEngineThemeNameIsSafe(name) ? name : nil;
+}
 
+// Reject symlinked managed directories for named themes. The system's /var
+// ancestor is normally a symlink; the check starts at GlassIcons instead.
+static BOOL GIEngineIsRealDirectory(NSString *path) {
+    const char *bytes = path.fileSystemRepresentation;
+    struct stat st;
+    return bytes && lstat(bytes, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+static BOOL GIEngineNamedThemeDirectoryIsSafe(NSString *themesRoot, NSString *dir) {
+    NSString *glassRoot = [themesRoot stringByDeletingLastPathComponent];
+    return GIEngineIsRealDirectory(glassRoot) &&
+           GIEngineIsRealDirectory(themesRoot) && GIEngineIsRealDirectory(dir);
+}
+
+static NSArray<NSString *> *GIEngineIconDirs(NSString *themeName) {
+    NSMutableArray<NSString *> *dirs = [NSMutableArray arrayWithCapacity:2];
+    if (!themeName) {
+        // Preserve the legacy RootHide-first, per-icon fallback behavior.
+        if ([[NSFileManager defaultManager] fileExistsAtPath:kGIEngineRootHideDir]) {
+            [dirs addObject:kGIEngineRootHideDir];
+        }
+        [dirs addObject:kGIEngineDefaultDir];
+        return dirs;
+    }
+
+    NSString *rootHideDir = [kGIEngineRootHideThemesDir stringByAppendingPathComponent:themeName];
+    NSString *defaultDir = [kGIEngineThemesDir stringByAppendingPathComponent:themeName];
+    if (GIEngineNamedThemeDirectoryIsSafe(kGIEngineRootHideThemesDir, rootHideDir)) {
+        [dirs addObject:rootHideDir];
+    }
+    if (GIEngineNamedThemeDirectoryIsSafe(kGIEngineThemesDir, defaultDir)) {
+        [dirs addObject:defaultDir];
+    }
+    // A missing named theme stays empty; never mix in the legacy default.
     return dirs;
 }
 
@@ -81,6 +142,14 @@ static NSArray<NSString *> *GIEngineIconDirs(void) {
 static NSMutableDictionary<NSString *, NSString *> *gEngineIndex = nil;
 static NSMutableSet<NSString *> *gEngineMisses = nil;
 static NSLock *gEngineIndexLock = nil;
+
+static NSLock *GIEngineIndexLock(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        gEngineIndexLock = [[NSLock alloc] init];
+    });
+    return gEngineIndexLock;
+}
 
 // Strip the scale suffix so "x@3x" and "x@2x" both index as "x".
 static NSString *GIEngineIndexKeyForFilename(NSString *filename) {
@@ -95,11 +164,13 @@ static NSString *GIEngineIndexKeyForFilename(NSString *filename) {
 static void GIEngineBuildIconIndexLocked(void) {
     if (!gEngineIndex) gEngineIndex = [NSMutableDictionary dictionary];
     [gEngineIndex removeAllObjects];
+    [gEngineMisses removeAllObjects];
 
+    NSString *themeName = GIEngineSelectedThemeName();
     NSFileManager *fm = [NSFileManager defaultManager];
     NSUInteger scanned = 0;
 
-    for (NSString *dir in GIEngineIconDirs()) {
+    for (NSString *dir in GIEngineIconDirs(themeName)) {
         NSArray<NSString *> *names = [fm contentsOfDirectoryAtPath:dir error:NULL];
         for (NSString *name in names) {
             if (![[name pathExtension].lowercaseString isEqualToString:@"png"]) continue;
@@ -111,22 +182,30 @@ static void GIEngineBuildIconIndexLocked(void) {
             // Directory order decides precedence: the first directory listed wins.
             if (gEngineIndex[key] != nil) continue;
 
-            gEngineIndex[key] = [dir stringByAppendingPathComponent:name];
+            NSString *path = [dir stringByAppendingPathComponent:name];
+            if (themeName) {
+                // Do not let a named theme's PNG symlink point outside its root.
+                const char *bytes = path.fileSystemRepresentation;
+                struct stat st;
+                if (!bytes || lstat(bytes, &st) != 0 || !S_ISREG(st.st_mode)) continue;
+            }
+            gEngineIndex[key] = path;
             scanned++;
         }
     }
 
-    GILogMain(@"icon index built: %lu entries", (unsigned long)scanned);
+    GILogMain(@"icon index built: %lu entries (theme: %@)",
+              (unsigned long)scanned, themeName ?: @"Default");
 }
 
 // Returns the theme PNG path for a bundle id, or nil.
 static NSString *GIEngineFindIconPath(NSString *bundleID) {
     if (bundleID.length == 0) return nil;
 
-    if (!gEngineIndexLock) gEngineIndexLock = [[NSLock alloc] init];
-    [gEngineIndexLock lock];
+    [GIEngineIndexLock() lock];
 
-    if (!gEngineIndex || gEngineIndex.count == 0) {
+    // An empty dictionary is a built, empty theme, not an uninitialized index.
+    if (!gEngineIndex) {
         GIEngineBuildIconIndexLocked();
     }
 
@@ -194,13 +273,21 @@ static BOOL GIEnginePackEnabled(void) {
     int cached = __atomic_load_n(&gGIPackEnabledCache, __ATOMIC_RELAXED);
     if (cached >= 0) return cached == 1;
 
-    CFBooleanRef value = (CFBooleanRef)CFPreferencesCopyAppValue(
-        CFSTR("IconPackEnabled"), CFSTR("com.soren.glassicons"));
-    BOOL enabled = value ? CFBooleanGetValue(value) : YES;
-    if (value) CFRelease(value);
-
-    __atomic_store_n(&gGIPackEnabledCache, enabled ? 1 : 0, __ATOMIC_RELAXED);
-    return enabled;
+    // Serialize a cache fill with reload so an old value cannot overwrite its
+    // invalidation after the newly synchronized preferences have been read.
+    [GIEngineIndexLock() lock];
+    cached = __atomic_load_n(&gGIPackEnabledCache, __ATOMIC_RELAXED);
+    if (cached < 0) {
+        CFPropertyListRef value = CFPreferencesCopyAppValue(
+            CFSTR("IconPackEnabled"), CFSTR("com.soren.glassicons"));
+        BOOL enabled = value && CFGetTypeID(value) == CFBooleanGetTypeID()
+            ? CFBooleanGetValue((CFBooleanRef)value) : YES;
+        if (value) CFRelease(value);
+        cached = enabled ? 1 : 0;
+        __atomic_store_n(&gGIPackEnabledCache, cached, __ATOMIC_RELAXED);
+    }
+    [gEngineIndexLock unlock];
+    return cached == 1;
 }
 
 static NSUInteger gGIMissLogCount = 0;
@@ -231,8 +318,9 @@ BOOL GIEngineHasIconForBundleID(NSString *bundleID) {
 // Index-only probe: no image decode. Called from the layout path, so it must
 // stay cheap.
 BOOL GIEngineIconHasPackIcon(id icon) {
-    if (!GIEnginePackEnabled()) return NO;
-    return GIEngineHasIconForBundleID(GIEngineBundleIDForIconObject(icon));
+    // No icon-pack replacement runs in this recovery build.
+    (void)icon;
+    return NO;
 }
 
 // --------------------------------------------------------------- hooking -----
@@ -268,7 +356,6 @@ static void GIHookMethod(Class cls, SEL sel, IMP replacement, IMP *origOut) {
 
 static IMP oCacheImageForIcon = NULL;
 static IMP oCacheCachedImageForIcon = NULL;
-static IMP oCacheUnmaskedImageForIcon = NULL;
 
 static NSUInteger gGIServeLogCount = 0;
 
@@ -305,10 +392,6 @@ static UIImage *HCachedImageForIcon(id self, SEL _cmd, id icon) {
     return GICacheSubstitute(self, _cmd, icon, oCacheCachedImageForIcon, @"cached");
 }
 
-static UIImage *HUnmaskedImageForIcon(id self, SEL _cmd, id icon) {
-    return GICacheSubstitute(self, _cmd, icon, oCacheUnmaskedImageForIcon, @"unmasked");
-}
-
 // --- SBLeafIcon / SBApplicationIcon -----------------------------------------
 //
 // generateIconImageWithInfo: takes an SBIconImageInfo struct by value. We do not
@@ -316,9 +399,7 @@ static UIImage *HUnmaskedImageForIcon(id self, SEL _cmd, id icon) {
 // plain argument list and passes the pointer through untouched.
 
 static IMP oLeafGenerateIcon = NULL;
-static IMP oLeafIconImageWithInfo = NULL;
 static IMP oAppGenerateIcon = NULL;
-static IMP oAppIconImageWithInfo = NULL;
 
 typedef id (*GIIconImageInfoIMP)(id, SEL, const void *);
 
@@ -337,108 +418,29 @@ static UIImage *HLeafGenerateIconImageWithInfo(id self, SEL _cmd, const void *in
     return GIIconImageInfoSubstitute(self, _cmd, info, oLeafGenerateIcon, @"leaf-gen");
 }
 
-static UIImage *HLeafIconImageWithInfo(id self, SEL _cmd, const void *info) {
-    return GIIconImageInfoSubstitute(self, _cmd, info, oLeafIconImageWithInfo, @"leaf-icon");
-}
 
 static UIImage *HAppGenerateIconImageWithInfo(id self, SEL _cmd, const void *info) {
     return GIIconImageInfoSubstitute(self, _cmd, info, oAppGenerateIcon, @"app-gen");
 }
 
-static UIImage *HAppIconImageWithInfo(id self, SEL _cmd, const void *info) {
-    return GIIconImageInfoSubstitute(self, _cmd, info, oAppIconImageWithInfo, @"app-icon");
-}
 
 // --- installation ------------------------------------------------------------
 
-// Extra 1-arg cache variants: same shape as imageForIcon:.
-static IMP oCacheCachedUnmaskedImageForIcon = NULL;
-static UIImage *HCachedUnmaskedImageForIcon(id self, SEL _cmd, id icon) {
-    return GICacheSubstitute(self, _cmd, icon, oCacheCachedUnmaskedImageForIcon, @"cached-unmasked");
-}
-
-// 2-arg variants take (icon, options).
-static IMP oCacheRealImageOpts = NULL;
-static IMP oCacheUnmaskedImageOpts = NULL;
-
-typedef id (*GI2ArgIMP)(id, SEL, id, id);
-
-static UIImage *H2ArgSubstitute(id self, SEL _cmd, id icon, id options,
-                                IMP orig, NSString *tag) {
-    NSString *bid = GIEngineBundleIDForIconObject(icon);
-    if (bid) {
-        UIImage *themed = GIEngineImageForBundleID(bid);
-        if (themed) { GIServeLog(tag, bid); return themed; }
-    }
-    if (orig) return ((GI2ArgIMP)orig)(self, _cmd, icon, options);
-    return nil;
-}
-
-static UIImage *HRealImageOpts(id self, SEL _cmd, id icon, id options) {
-    return H2ArgSubstitute(self, _cmd, icon, options, oCacheRealImageOpts, @"real-opts");
-}
-
-static UIImage *HUnmaskedImageOpts(id self, SEL _cmd, id icon, id options) {
-    return H2ArgSubstitute(self, _cmd, icon, options, oCacheUnmaskedImageOpts, @"unmasked-opts");
-}
-
-// 3-arg variants take (icon, appearance, options).
-static IMP oCacheImageAppearance = NULL;
-static IMP oCacheCachedImageAppearance = NULL;
-
-typedef id (*GI3ArgIMP)(id, SEL, id, id, id);
-
-static UIImage *H3ArgSubstitute(id self, SEL _cmd, id icon, id appearance, id options,
-                                IMP orig, NSString *tag) {
-    NSString *bid = GIEngineBundleIDForIconObject(icon);
-    if (bid) {
-        UIImage *themed = GIEngineImageForBundleID(bid);
-        if (themed) { GIServeLog(tag, bid); return themed; }
-    }
-    if (orig) return ((GI3ArgIMP)orig)(self, _cmd, icon, appearance, options);
-    return nil;
-}
-
-static UIImage *HImageAppearance(id self, SEL _cmd, id icon, id appearance, id options) {
-    return H3ArgSubstitute(self, _cmd, icon, appearance, options, oCacheImageAppearance, @"image-appear");
-}
-
-static UIImage *HCachedImageAppearance(id self, SEL _cmd, id icon, id appearance, id options) {
-    return H3ArgSubstitute(self, _cmd, icon, appearance, options, oCacheCachedImageAppearance, @"cached-appear");
-}
-
+// Extra 1-arg cache variants were added to this revision but are not part of
+// the currently enabled recovery configuration. Keep the helpers above so
+// future variant experiments remain independent.
 static void GIIconEngineInstallHooksOnce(void) {
+    // Keep only the four entry points that were exercised by the previous
+    // stable build. The newer options/appearance and iconImageWithInfo:
+    // variants have private ABI details that are not verified on this device.
     Class cache = NSClassFromString(@"SBHIconImageCache");
     if (cache) {
-        // 1-arg
-        GIHookMethod(cache, @selector(imageForIcon:), (IMP)HImageForIcon, &oCacheImageForIcon);
-        GIHookMethod(cache, @selector(cachedImageForIcon:), (IMP)HCachedImageForIcon, &oCacheCachedImageForIcon);
-        GIHookMethod(cache, @selector(unmaskedImageForIcon:), (IMP)HUnmaskedImageForIcon, &oCacheUnmaskedImageForIcon);
-        GIHookMethod(cache, NSSelectorFromString(@"cachedUnmaskedImageForIcon:"),
-                     (IMP)HCachedUnmaskedImageForIcon, &oCacheCachedUnmaskedImageForIcon);
-
-        // 2-arg
-        GIHookMethod(cache, NSSelectorFromString(@"realImageForIcon:options:"),
-                     (IMP)HRealImageOpts, &oCacheRealImageOpts);
-        GIHookMethod(cache, NSSelectorFromString(@"unmaskedImageForIcon:options:"),
-                     (IMP)HUnmaskedImageOpts, &oCacheUnmaskedImageOpts);
-
-        // 3-arg
-        GIHookMethod(cache, NSSelectorFromString(@"imageForIcon:imageAppearance:options:"),
-                     (IMP)HImageAppearance, &oCacheImageAppearance);
-        GIHookMethod(cache, NSSelectorFromString(@"cachedImageForIcon:imageAppearance:options:"),
-                     (IMP)HCachedImageAppearance, &oCacheCachedImageAppearance);
-
-        NSUInteger installed = 0;
-        if (oCacheImageForIcon) installed++;
-        if (oCacheCachedImageForIcon) installed++;
-        if (oCacheUnmaskedImageForIcon) installed++;
-        if (oCacheCachedUnmaskedImageForIcon) installed++;
-        if (oCacheRealImageOpts) installed++;
-        if (oCacheUnmaskedImageOpts) installed++;
-        if (oCacheImageAppearance) installed++;
-        if (oCacheCachedImageAppearance) installed++;
-        GILogMain(@"SBHIconImageCache hooks: %lu/8", (unsigned long)installed);
+        GIHookMethod(cache, @selector(imageForIcon:),
+                     (IMP)HImageForIcon, &oCacheImageForIcon);
+        GIHookMethod(cache, @selector(cachedImageForIcon:),
+                     (IMP)HCachedImageForIcon, &oCacheCachedImageForIcon);
+        GILogMain(@"SBHIconImageCache hooks: image=%d cached=%d",
+                  oCacheImageForIcon != NULL, oCacheCachedImageForIcon != NULL);
     } else {
         GILogMain(@"SBHIconImageCache missing");
     }
@@ -447,20 +449,16 @@ static void GIIconEngineInstallHooksOnce(void) {
     if (app) {
         GIHookMethod(app, @selector(generateIconImageWithInfo:),
                      (IMP)HAppGenerateIconImageWithInfo, &oAppGenerateIcon);
-        GIHookMethod(app, @selector(iconImageWithInfo:),
-                     (IMP)HAppIconImageWithInfo, &oAppIconImageWithInfo);
-        GILogMain(@"SBApplicationIcon hooks: gen=%d info=%d",
-                  oAppGenerateIcon != NULL, oAppIconImageWithInfo != NULL);
+        GILogMain(@"SBApplicationIcon hooks: gen=%d",
+                  oAppGenerateIcon != NULL);
     }
 
     Class leaf = NSClassFromString(@"SBLeafIcon");
     if (leaf) {
         GIHookMethod(leaf, @selector(generateIconImageWithInfo:),
                      (IMP)HLeafGenerateIconImageWithInfo, &oLeafGenerateIcon);
-        GIHookMethod(leaf, @selector(iconImageWithInfo:),
-                     (IMP)HLeafIconImageWithInfo, &oLeafIconImageWithInfo);
-        GILogMain(@"SBLeafIcon hooks: gen=%d info=%d",
-                  oLeafGenerateIcon != NULL, oLeafIconImageWithInfo != NULL);
+        GILogMain(@"SBLeafIcon hooks: gen=%d",
+                  oLeafGenerateIcon != NULL);
     }
 }
 
@@ -474,33 +472,42 @@ static void GIIconEngineInstallHooks(void) {
 // ---------------------------------------------------------------- lifecycle --
 
 void GIIconEngineInstall(void) {
-    if (!gEngineIndexLock) gEngineIndexLock = [[NSLock alloc] init];
+    [GIEngineIndexLock() lock];
     if (!gEngineMisses) gEngineMisses = [NSMutableSet set];
-
-    [gEngineIndexLock lock];
     GIEngineBuildIconIndexLocked();
+    NSUInteger count = gEngineIndex.count;
+    __atomic_store_n(&gGIPackEnabledCache, -1, __ATOMIC_RELAXED);
     [gEngineIndexLock unlock];
 
+    BOOL enabled = GIEnginePackEnabled() && count > 0;
     GILogMain(@"engine ready: %lu theme icons, pack %@",
-              (unsigned long)gEngineIndex.count,
-              GIEnginePackEnabled() ? @"on" : @"off");
+              (unsigned long)count,
+              enabled ? @"on" : @"off");
 
-    GIIconEngineInstallHooks();
+    // Do not install any icon hooks while the pack is disabled. This is also
+    // the recovery path for devices that were left in a SpringBoard loop.
+    // Recovery build: do not install icon-replacement hooks in SpringBoard.
+    // Keep the installer referenced for later ABI-verified development only.
+    (void)&GIIconEngineInstallHooks;
+    GILogMain(@"icon hooks disabled in recovery build");
 }
 
 void GIIconEngineReload(void) {
-    if (!gEngineIndexLock) gEngineIndexLock = [[NSLock alloc] init];
+    [GIEngineIndexLock() lock];
     if (!gEngineMisses) gEngineMisses = [NSMutableSet set];
-
-    [gEngineIndexLock lock];
     GIEngineBuildIconIndexLocked();
+    NSUInteger count = gEngineIndex.count;
+    __atomic_store_n(&gGIPackEnabledCache, -1, __ATOMIC_RELAXED);
     [gEngineIndexLock unlock];
 
     gGIMissLogCount = 0;
-    __atomic_store_n(&gGIPackEnabledCache, -1, __ATOMIC_RELAXED);
+    BOOL enabled = GIEnginePackEnabled() && count > 0;
     GILogMain(@"engine reloaded: %lu theme icons, pack %@",
-              (unsigned long)gEngineIndex.count,
-              GIEnginePackEnabled() ? @"on" : @"off");
+              (unsigned long)count,
+              enabled ? @"on" : @"off");
 
-    GIIconEngineInstallHooks();
+    // Recovery build: do not install icon-replacement hooks in SpringBoard.
+    // Keep the installer referenced for later ABI-verified development only.
+    (void)&GIIconEngineInstallHooks;
+    GILogMain(@"icon hooks disabled in recovery build");
 }

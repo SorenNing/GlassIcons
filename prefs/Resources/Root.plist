@@ -8,9 +8,161 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>给桌面 App 图标叠加玻璃高光与描边。文件夹不做任何处理。</string>
+			<string>实验性安全总开关，默认关闭，与旧图标替换开关是两个独立设置，互不自动改值。方案 B 要替换图标需同时打开这两个开关；旧开关不能单独开启服务。设置页只保存设置，不能仅凭设置页确认已接入。更改服务开关后需重启 iconservicesagent；关闭不能卸载当前进程已安装的 hook，需重启后才可验证。设置页不会替你重启进程。异常可能影响图标显示，请先准备安全模式或卸载等恢复途径。</string>
 			<key>label</key>
-			<string>玻璃图标</string>
+			<string>方案 B · 图标服务安全开关</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.soren.glassicons</string>
+			<key>key</key>
+			<string>IconServiceEnabled</string>
+			<key>label</key>
+			<string>启用实验性图标服务</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>旧图标替换开关 IconPackEnabled 默认开启，但不能单独开启服务；方案 B 替换还需要上方 IconServiceEnabled 开启。更改其中一个不会改动另一个。默认主题使用 /var/mobile/Library/GlassIcons/Icons，其他主题位于 /var/mobile/Library/GlassIcons/Themes；服务会优先尝试 /var/jb 下的同名路径。文件名使用 App Bundle ID，如 com.tencent.xin.png（可加 @2x/@3x）；需为单帧、方形、正常方向的 PNG，最多 4 MB、2048×2048 像素。选择或重载不保证服务已收到或桌面缓存已更新。</string>
+			<key>label</key>
+			<string>图标包与主题</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.soren.glassicons</string>
+			<key>key</key>
+			<string>IconPackEnabled</string>
+			<key>label</key>
+			<string>图标替换（需同时开启服务）</string>
+		</dict>
+		<dict>
+			<key>action</key>
+			<string>selectIconPackTheme:</string>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>选择主题（含默认旧目录）</string>
+		</dict>
+		<dict>
+			<key>action</key>
+			<string>createIconPackTheme:</string>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>创建并选择主题</string>
+		</dict>
+		<dict>
+			<key>action</key>
+			<string>openIconPackFolder:</string>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>打开当前主题目录</string>
+		</dict>
+		<dict>
+			<key>action</key>
+			<string>reloadIconPack:</string>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>重新加载图标包</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>以下图标包常用选项可保存，但引擎尚未实现对这些选项的读取与处理，当前均不生效；数值范围与默认值仅为预留。</string>
+			<key>label</key>
+			<string>图标包比例（未实现，不生效）</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSliderCell</string>
+			<key>cellClass</key>
+			<string>GISliderCell</string>
+			<key>default</key>
+			<real>1.0</real>
+			<key>defaults</key>
+			<string>com.soren.glassicons</string>
+			<key>height</key>
+			<real>56.0</real>
+			<key>isContinuous</key>
+			<true/>
+			<key>key</key>
+			<string>IconPackScale</string>
+			<key>max</key>
+			<real>1.5</real>
+			<key>min</key>
+			<real>0.5</real>
+			<key>showValue</key>
+			<false/>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>预留圆角比例 0–0.5；仅保存，当前引擎尚未实现，暂不生效。</string>
+			<key>label</key>
+			<string>图标包圆角（未实现，不生效）</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSliderCell</string>
+			<key>cellClass</key>
+			<string>GISliderCell</string>
+			<key>default</key>
+			<real>0.2</real>
+			<key>defaults</key>
+			<string>com.soren.glassicons</string>
+			<key>height</key>
+			<real>56.0</real>
+			<key>isContinuous</key>
+			<true/>
+			<key>key</key>
+			<string>IconPackCornerRadius</string>
+			<key>max</key>
+			<real>0.5</real>
+			<key>min</key>
+			<real>0.0</real>
+			<key>showValue</key>
+			<false/>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>仅保存该图标包选项；当前引擎尚未实现，暂不控制玻璃叠加。上方独立的玻璃图标总设置不受此选项控制。</string>
+			<key>label</key>
+			<string>图标包玻璃叠加（未实现）</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.soren.glassicons</string>
+			<key>key</key>
+			<string>IconPackGlassOverlay</string>
+			<key>label</key>
+			<string>叠加玻璃（不生效）</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>方案 B 构建不包含旧版 SpringBoard 玻璃图标注入；以下选项保留旧值，但在方案 B 中不生效。旧进程若仍加载旧版，需重启后才能完成切换。</string>
+			<key>label</key>
+			<string>玻璃图标（旧版设置）</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -28,7 +180,7 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>所有效果的总倍率。0 等于临时关闭，超过 1 会过曝，可到 5 做夸张效果。</string>
+			<string>旧版图标强度参数；旧版实际强度会按图像尺寸计算并限制上限，不保证数值越大效果越强。方案 B 中仅保存。</string>
 			<key>label</key>
 			<string>整体强度（总开关倍率）</string>
 		</dict>
@@ -38,7 +190,7 @@
 			<key>cellClass</key>
 			<string>GISliderCell</string>
 			<key>default</key>
-			<real>0.7</real>
+			<real>0.35</real>
 			<key>defaults</key>
 			<string>com.soren.glassicons</string>
 			<key>height</key>
@@ -58,9 +210,9 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>过高会让浅色图标顶部发白，建议 0.4–0.7。</string>
+			<string>旧版预留参数；当前源码读取此值，但未将其用于绘制高光。方案 B 中仅保存。</string>
 			<key>label</key>
-			<string>高光强度（图标顶部的柔光）</string>
+			<string>高光强度（旧版未接通）</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -68,7 +220,7 @@
 			<key>cellClass</key>
 			<string>GISliderCell</string>
 			<key>default</key>
-			<real>0.6</real>
+			<real>0.30</real>
 			<key>defaults</key>
 			<string>com.soren.glassicons</string>
 			<key>height</key>
@@ -98,7 +250,7 @@
 			<key>cellClass</key>
 			<string>GISliderCell</string>
 			<key>default</key>
-			<real>0.7</real>
+			<real>0.50</real>
 			<key>defaults</key>
 			<string>com.soren.glassicons</string>
 			<key>height</key>
@@ -118,45 +270,9 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>把 PNG 放进 /var/mobile/Library/GlassIcons/Icons/，文件名用 App 的 Bundle ID，例如 com.tencent.xin.png（可加 @2x/@3x）。开关打开后生效，关闭恢复系统图标。</string>
+			<string>方案 B 构建不包含旧版 SpringBoard 角标注入；以下选项保留旧值，但在方案 B 中不生效。旧版实现会处理原有红色底板与数字样式，不能保证还原原样。</string>
 			<key>label</key>
-			<string>桌面图标包</string>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>default</key>
-			<true/>
-			<key>defaults</key>
-			<string>com.soren.glassicons</string>
-			<key>key</key>
-			<string>IconPackEnabled</string>
-			<key>label</key>
-			<string>启用图标替换</string>
-		</dict>
-		<dict>
-			<key>action</key>
-			<string>openIconPackFolder:</string>
-			<key>cell</key>
-			<string>PSButtonCell</string>
-			<key>label</key>
-			<string>打开图标目录</string>
-		</dict>
-		<dict>
-			<key>action</key>
-			<string>reloadIconPack:</string>
-			<key>cell</key>
-			<string>PSButtonCell</string>
-			<key>label</key>
-			<string>重新加载图标包</string>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSGroupCell</string>
-			<key>footerText</key>
-			<string>给角标气泡加玻璃质感（磨砂底+描边+顶部柔光），数字保持原样。</string>
-			<key>label</key>
-			<string>通知角标</string>
+			<string>通知角标（旧版设置）</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -174,7 +290,7 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>角标的总体倍率，0 等于关闭。</string>
+			<string>旧版角标的总体倍率；0 移除玻璃叠加，但不保证恢复系统原有角标。方案 B 中仅保存。</string>
 			<key>label</key>
 			<string>角标整体强度</string>
 		</dict>
@@ -274,7 +390,7 @@
 			<key>cellClass</key>
 			<string>GISliderCell</string>
 			<key>default</key>
-			<real>0.03</real>
+			<real>0.02</real>
 			<key>defaults</key>
 			<string>com.soren.glassicons</string>
 			<key>height</key>
@@ -296,7 +412,7 @@
 			<key>footerText</key>
 			<string>GlassIcons
 作者: Ning
-调整后回到桌面立即生效，无需注销。</string>
+方案 B 是实验性构建。服务开关默认关闭，变更后须重启图标服务进程。图标替换效果和缓存刷新取决于运行中的服务，不能仅凭设置页确认。旧版玻璃图标、角标及图标包比例、圆角、玻璃叠加选项不会在方案 B 中生效。</string>
 			<key>label</key>
 			<string>关于</string>
 		</dict>

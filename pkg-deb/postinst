@@ -1,9 +1,9 @@
 #!/bin/sh
 set -e
 DIR=/var/mobile/Library/GlassIcons/Icons
-mkdir -p "$DIR"
-chmod 0755 /var/mobile/Library/GlassIcons "$DIR" 2>/dev/null || true
-chown mobile:mobile /var/mobile/Library/GlassIcons "$DIR" 2>/dev/null || true
+mkdir -p "$DIR" /var/mobile/Library/GlassIcons/Themes
+chmod 0755 /var/mobile/Library/GlassIcons "$DIR" /var/mobile/Library/GlassIcons/Themes 2>/dev/null || true
+chown mobile:mobile /var/mobile/Library/GlassIcons "$DIR" /var/mobile/Library/GlassIcons/Themes 2>/dev/null || true
 if [ ! -f "$DIR/README.txt" ]; then
   cat > "$DIR/README.txt" <<'TXT'
 把 PNG 图标放在这个目录里，文件名用 App 的 Bundle ID：

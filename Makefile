@@ -4,10 +4,11 @@ THEOS_PACKAGE_SCHEME ?= roothide
 
 include $(THEOS)/makefiles/common.mk
 
-TWEAK_NAME = GlassIcons
-GlassIcons_FILES = GlassIcons.m BadgeGlass.m GIIconEngine.m
-GlassIcons_CFLAGS = -fobjc-arc -Wall
-GlassIcons_FRAMEWORKS = UIKit Foundation CoreFoundation QuartzCore CoreGraphics
+# Plan B test: do not restore SpringBoard injection after the recovery build.
+TWEAK_NAME = GIIconService
+GIIconService_FILES = GIIconService.m
+GIIconService_CFLAGS = -fobjc-arc -Wall -Wextra
+GIIconService_FRAMEWORKS = Foundation CoreFoundation CoreGraphics ImageIO
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 
@@ -20,3 +21,5 @@ after-stage::
 	install -d "$(THEOS_STAGING_DIR)/Library/PreferenceLoader/Preferences"
 	install -m 644 prefs/GlassIcons.plist "$(THEOS_STAGING_DIR)/Library/PreferenceLoader/Preferences/GlassIcons.plist"
 	ldid -S -Cadhoc "$(THEOS_STAGING_DIR)/Library/PreferenceBundles/GlassIconsPrefs.bundle/GlassIconsPrefs" && echo "signed prefs bundle"
+	install -d "$(THEOS_STAGING_DIR)/Library/MobileSubstrate/DynamicLibraries"
+	install -m 644 GIIconService.plist "$(THEOS_STAGING_DIR)/Library/MobileSubstrate/DynamicLibraries/GIIconService.plist"
