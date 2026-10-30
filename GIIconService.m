@@ -144,8 +144,11 @@ static void GIReloadSettings(void) {
         if (CFPreferencesAppSynchronize(CFSTR("com.soren.glassicons"))) {
             id service = CFBridgingRelease(CFPreferencesCopyAppValue(CFSTR("IconServiceEnabled"), CFSTR("com.soren.glassicons")));
             id theme = CFBridgingRelease(CFPreferencesCopyAppValue(CFSTR("IconPackTheme"), CFSTR("com.soren.glassicons")));
-            BOOL enabled = service && CFGetTypeID((__bridge CFTypeRef)service) == CFBooleanGetTypeID() &&
-                           CFBooleanGetValue((__bridge CFBooleanRef)service);
+            BOOL enabled = YES;
+            if (service) {
+                enabled = CFGetTypeID((__bridge CFTypeRef)service) == CFBooleanGetTypeID() &&
+                          CFBooleanGetValue((__bridge CFBooleanRef)service);
+            }
             NSString *name = @"Default";
             if (theme) name = [theme isKindOfClass:[NSString class]] ? theme : nil;
             if (name && ([name isEqualToString:@"Default"] || GISafeThemeName(name))) {

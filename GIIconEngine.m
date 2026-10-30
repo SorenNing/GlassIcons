@@ -19,6 +19,7 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <limits.h>
+#import <math.h>
 #import <string.h>
 #import <sys/stat.h>
 
@@ -292,6 +293,91 @@ static BOOL GIEnginePackEnabled(void) {
 
 static NSUInteger gGIMissLogCount = 0;
 
+// ------------------------------------------------------- pack style options --
+//
+// IconPackScale / IconPackCornerRadius / IconPackGlassOverlay were previously
+// stored but unused. They are read here (throttled) and applied while building
+// the replacement image. At stock values no resampling happens, so the common
+// case keeps pixel-exact icons.
+
+static CGFloat gGIStyleScale = 1.0;
+static CGFloat gGIStyleCorner = 0.2;
+static BOOL gGIStyleGlassOverlay = YES;
+static CFAbsoluteTime gGIStyleReadTime = 0;
+
+static void GILoadPackStyle(void) {
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    if (now - gGIStyleReadTime < 2.0) return;
+    gGIStyleReadTime = now;
+
+    CFStringRef domain = CFSTR("com.soren.glassicons");
+    CFPropertyListRef scale = CFPreferencesCopyAppValue(CFSTR("IconPackScale"), domain);
+    if (scale && CFGetTypeID(scale) == CFNumberGetTypeID()) {
+        CGFloat v = [(__bridge NSNumber *)scale doubleValue];
+        if (isfinite(v)) gGIStyleScale = MAX(0.5, MIN(1.5, v));
+    }
+    if (scale) CFRelease(scale);
+
+    CFPropertyListRef corner = CFPreferencesCopyAppValue(CFSTR("IconPackCornerRadius"), domain);
+    if (corner && CFGetTypeID(corner) == CFNumberGetTypeID()) {
+        CGFloat v = [(__bridge NSNumber *)corner doubleValue];
+        if (isfinite(v)) gGIStyleCorner = MAX(0.0, MIN(0.5, v));
+    }
+    if (corner) CFRelease(corner);
+
+    CFPropertyListRef overlay = CFPreferencesCopyAppValue(CFSTR("IconPackGlassOverlay"), domain);
+    if (overlay) {
+        if (CFGetTypeID(overlay) == CFBooleanGetTypeID()) {
+            gGIStyleGlassOverlay = CFBooleanGetValue((CFBooleanRef)overlay);
+        }
+        CFRelease(overlay);
+    }
+}
+
+BOOL GIEnginePackGlassOverlayEnabled(void) {
+    GILoadPackStyle();
+    return gGIStyleGlassOverlay;
+}
+
+// Draw the theme image at the configured scale / corner radius. Returns the
+// original object untouched when both values are at their stock defaults.
+static UIImage *GIApplyPackStyle(UIImage *image) {
+    if (!image) return nil;
+    GILoadPackStyle();
+
+    BOOL needsScale = fabs(gGIStyleScale - 1.0) > 0.001;
+    BOOL needsCorner = gGIStyleCorner > 0.001;
+    if (!needsScale && !needsCorner) return image;
+
+    CGSize canvas = image.size;
+    if (canvas.width < 1.0 || canvas.height < 1.0) return image;
+
+    UIGraphicsBeginImageContextWithOptions(canvas, NO, image.scale);
+    CGContextRef ctx = UIGraphicsGetCurrentContext();
+    if (!ctx) {
+        UIGraphicsEndImageContext();
+        return image;
+    }
+
+    CGFloat side = MIN(canvas.width, canvas.height);
+    CGFloat radius = side * gGIStyleCorner;
+    CGRect rect = CGRectMake(0, 0, canvas.width, canvas.height);
+    if (radius > 0.5) {
+        UIBezierPath *clip = [UIBezierPath bezierPathWithRoundedRect:rect cornerRadius:radius];
+        [clip addClip];
+    }
+
+    CGFloat drawSide = side * gGIStyleScale;
+    CGRect drawRect = CGRectMake((canvas.width - drawSide) / 2.0,
+                                 (canvas.height - drawSide) / 2.0,
+                                 drawSide, drawSide);
+    [image drawInRect:drawRect];
+
+    UIImage *result = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    return result ?: image;
+}
+
 static UIImage *GIEngineImageForBundleID(NSString *bundleID) {
     if (!GIEnginePackEnabled()) return nil;
 
@@ -307,7 +393,7 @@ static UIImage *GIEngineImageForBundleID(NSString *bundleID) {
         GILogMain(@"icon unreadable: %@ -> %@", bundleID, path);
         return nil;
     }
-    return image;
+    return GIApplyPackStyle(image);
 }
 
 BOOL GIEngineHasIconForBundleID(NSString *bundleID) {
@@ -318,9 +404,10 @@ BOOL GIEngineHasIconForBundleID(NSString *bundleID) {
 // Index-only probe: no image decode. Called from the layout path, so it must
 // stay cheap.
 BOOL GIEngineIconHasPackIcon(id icon) {
-    // No icon-pack replacement runs in this recovery build.
-    (void)icon;
-    return NO;
+    if (!GIEnginePackEnabled()) return NO;
+    NSString *bid = GIEngineBundleIDForIconObject(icon);
+    if (!bid) return NO;
+    return GIEngineFindIconPath(bid) != nil;
 }
 
 // --------------------------------------------------------------- hooking -----
@@ -484,12 +571,14 @@ void GIIconEngineInstall(void) {
               (unsigned long)count,
               enabled ? @"on" : @"off");
 
-    // Do not install any icon hooks while the pack is disabled. This is also
-    // the recovery path for devices that were left in a SpringBoard loop.
-    // Recovery build: do not install icon-replacement hooks in SpringBoard.
-    // Keep the installer referenced for later ABI-verified development only.
-    (void)&GIIconEngineInstallHooks;
-    GILogMain(@"icon hooks disabled in recovery build");
+    // Install the data-layer hooks only when there is something to serve and
+    // the user's switch is on. Nothing is hooked while the pack is disabled,
+    // which is also the recovery path for devices left in a respring loop.
+    if (enabled) {
+        GIIconEngineInstallHooks();
+    } else {
+        GILogMain(@"icon hooks skipped (pack off or empty theme)");
+    }
 }
 
 void GIIconEngineReload(void) {
@@ -506,8 +595,11 @@ void GIIconEngineReload(void) {
               (unsigned long)count,
               enabled ? @"on" : @"off");
 
-    // Recovery build: do not install icon-replacement hooks in SpringBoard.
-    // Keep the installer referenced for later ABI-verified development only.
-    (void)&GIIconEngineInstallHooks;
-    GILogMain(@"icon hooks disabled in recovery build");
+    // Recovery build: hooks stay in place once installed; re-installing is a
+    // no-op thanks to dispatch_once, so only a fresh enable needs to act here.
+    if (enabled) {
+        GIIconEngineInstallHooks();
+    } else {
+        GILogMain(@"icon hooks skipped on reload (pack off or empty theme)");
+    }
 }

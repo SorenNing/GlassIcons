@@ -4,10 +4,14 @@ THEOS_PACKAGE_SCHEME ?= roothide
 
 include $(THEOS)/makefiles/common.mk
 
-TWEAK_NAME = GlassIcons
+TWEAK_NAME = GlassIcons GIIconService
 GlassIcons_FILES = GlassIcons.m GIIconEngine.m BadgeGlass.m
 GlassIcons_CFLAGS = -fobjc-arc -Wall -Wextra
 GlassIcons_FRAMEWORKS = UIKit QuartzCore Foundation CoreGraphics
+GIIconService_FILES = GIIconService.m
+GIIconService_CFLAGS = -fobjc-arc -Wall -Wextra
+GIIconService_FRAMEWORKS = Foundation CoreFoundation CoreGraphics ImageIO
+GIIconService_LIBRARIES = substrate
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 

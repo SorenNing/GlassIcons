@@ -8,7 +8,7 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>实验性安全总开关，默认关闭，与旧图标替换开关是两个独立设置，互不自动改值。方案 B 要替换图标需同时打开这两个开关；旧开关不能单独开启服务。设置页只保存设置，不能仅凭设置页确认已接入。更改服务开关后需重启 iconservicesagent；关闭不能卸载当前进程已安装的 hook，需重启后才可验证。设置页不会替你重启进程。异常可能影响图标显示，请先准备安全模式或卸载等恢复途径。</string>
+			<string>图标服务开关，默认开启。安装包会自动重启图标服务，一般不需要手动操作。关闭开关并重启设备后，服务替换才会完全停止。异常时可用安全模式或卸载恢复。</string>
 			<key>label</key>
 			<string>方案 B · 图标服务安全开关</string>
 		</dict>
@@ -21,6 +21,8 @@
 			<string>com.soren.glassicons</string>
 			<key>key</key>
 			<string>IconServiceEnabled</string>
+			<key>default</key>
+			<true/>
 			<key>label</key>
 			<string>启用实验性图标服务</string>
 		</dict>
@@ -70,6 +72,14 @@
 		</dict>
 		<dict>
 			<key>action</key>
+			<string>applyNow:</string>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>立即应用（重启桌面）</string>
+		</dict>
+		<dict>
+			<key>action</key>
 			<string>reloadIconPack:</string>
 			<key>cell</key>
 			<string>PSButtonCell</string>
@@ -80,7 +90,7 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>以下图标包常用选项可保存，但引擎尚未实现对这些选项的读取与处理，当前均不生效；数值范围与默认值仅为预留。</string>
+			<string>调整替换图标在图标格内的显示比例，默认 1.0（原始大小）；修改后立即生效。</string>
 			<key>label</key>
 			<string>图标包比例（未实现，不生效）</string>
 		</dict>
@@ -110,7 +120,7 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>预留圆角比例 0–0.5；仅保存，当前引擎尚未实现，暂不生效。</string>
+			<string>替换图标的圆角比例，0 为直角，0.2 接近系统图标；修改后立即生效。</string>
 			<key>label</key>
 			<string>图标包圆角（未实现，不生效）</string>
 		</dict>
@@ -140,7 +150,7 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>仅保存该图标包选项；当前引擎尚未实现，暂不控制玻璃叠加。上方独立的玻璃图标总设置不受此选项控制。</string>
+			<string>开启后自定义图标上方也会叠加玻璃高光；关闭则保留原图。上方玻璃图标总开关仍然生效。</string>
 			<key>label</key>
 			<string>图标包玻璃叠加（未实现）</string>
 		</dict>
@@ -154,13 +164,13 @@
 			<key>key</key>
 			<string>IconPackGlassOverlay</string>
 			<key>label</key>
-			<string>叠加玻璃（不生效）</string>
+			<string>自定义图标叠加玻璃</string>
 		</dict>
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>方案 B 构建不包含旧版 SpringBoard 玻璃图标注入；以下选项保留旧值，但在方案 B 中不生效。旧进程若仍加载旧版，需重启后才能完成切换。</string>
+			<string>桌面玻璃图标效果，安装后自动生效。</string>
 			<key>label</key>
 			<string>玻璃图标（旧版设置）</string>
 		</dict>
@@ -270,7 +280,7 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>方案 B 构建不包含旧版 SpringBoard 角标注入；以下选项保留旧值，但在方案 B 中不生效。旧版实现会处理原有红色底板与数字样式，不能保证还原原样。</string>
+			<string>通知角标玻璃效果，安装后自动生效。</string>
 			<key>label</key>
 			<string>通知角标（旧版设置）</string>
 		</dict>
@@ -412,7 +422,7 @@
 			<key>footerText</key>
 			<string>GlassIcons
 作者: Ning
-方案 B 是实验性构建。服务开关默认关闭，变更后须重启图标服务进程。图标替换效果和缓存刷新取决于运行中的服务，不能仅凭设置页确认。旧版玻璃图标、角标及图标包比例、圆角、玻璃叠加选项不会在方案 B 中生效。</string>
+安装后默认全部开启，无需手动配置。替换图标请把 PNG 放进对应主题目录，文件名使用 App Bundle ID。修改后可用“重新加载图标包”，必要时重启设备。</string>
 			<key>label</key>
 			<string>关于</string>
 		</dict>

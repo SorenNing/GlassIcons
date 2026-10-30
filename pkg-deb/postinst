@@ -17,4 +17,13 @@ TXT
   chmod 0644 "$DIR/README.txt"
   chown mobile:mobile "$DIR/README.txt" 2>/dev/null || true
 fi
+# Restart the affected processes so the new dylibs load without the user
+# having to know how. Both are best effort: a missing helper must not fail dpkg.
+if command -v launchctl >/dev/null 2>&1; then
+  launchctl kickstart -k system/com.apple.iconservicesagent >/dev/null 2>&1 || true
+fi
+if command -v killall >/dev/null 2>&1; then
+  killall -9 iconservicesagent >/dev/null 2>&1 || true
+  killall -9 SpringBoard >/dev/null 2>&1 || true
+fi
 exit 0

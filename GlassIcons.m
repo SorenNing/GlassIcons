@@ -8,6 +8,7 @@
 void GIIconEngineInstall(void);
 void GIIconEngineReload(void);
 BOOL GIEngineIconHasPackIcon(id icon);
+BOOL GIEnginePackGlassOverlayEnabled(void);
 
 // ============================================================
 // GlassIcons.m — glass overlay on SpringBoard icon surfaces
@@ -107,8 +108,10 @@ static BOOL GIShouldSkipView(UIView *view) {
             NSString *iconName = NSStringFromClass([icon class]);
             if ([iconName containsString:@"Folder"]) shouldSkip = YES;
             // If this icon has a custom icon-pack replacement, skip glass overlay
-            // (user requirement: custom icons should NOT have glass on top)
-            if (!shouldSkip && GIEngineIconHasPackIcon(icon)) shouldSkip = YES;
+            // unless the user explicitly asked for glass on top of pack icons.
+            if (!shouldSkip && GIEngineIconHasPackIcon(icon)) {
+                shouldSkip = !GIEnginePackGlassOverlayEnabled();
+            }
         }
     } @catch (__unused NSException *e) {}
     objc_setAssociatedObject(view, kPackIconSkipKey, [NSNumber numberWithBool:shouldSkip], OBJC_ASSOCIATION_RETAIN_NONATOMIC);

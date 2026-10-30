@@ -440,4 +440,30 @@ static id GIValidatedPreferenceValue(id value, id fallback, BOOL writing) {
     }];
 }
 
+// Restart SpringBoard / iconservicesagent without leaving Settings.
+-(void)applyNow:(PSSpecifier *)specifier {
+    (void)specifier;
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"立即应用"
+                                                                   message:@"将重启桌面与图标服务，屏幕会短暂黑一下然后恢复。"
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"重启" style:UIAlertActionStyleDestructive
+                                            handler:^(__unused UIAlertAction *action) {
+        [self restartProcessNamed:@"iconservicesagent"];
+        [self restartProcessNamed:@"SpringBoard"];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+-(void)restartProcessNamed:(NSString *)name {
+    if (name.length == 0) return;
+    pid_t pid = -1;
+    @try {
+        NSString *pattern = [NSString stringWithFormat:@"/usr/bin/killall -9 %@", name];
+        FILE *pipe = popen(pattern.UTF8String, "r");
+        if (pipe) pclose(pipe);
+        (void)pid;
+    } @catch (__unused NSException *e) {}
+}
+
 @end
