@@ -492,6 +492,67 @@ static UIImage *GICacheSubstitute(id self, SEL _cmd, id icon, IMP orig, NSString
     return nil;
 }
 
+// Appearance / options variants. The extra arguments are opaque to us: we only
+// need to forward them unchanged to the original implementation, so each hook
+// declares the widest scalar it may receive and passes it straight through.
+
+static IMP oCacheUnmasked = NULL;
+static IMP oCacheCachedUnmasked = NULL;
+static IMP oCacheRealOptions = NULL;
+static IMP oCacheUnmaskedOptions = NULL;
+static IMP oCacheAppearance = NULL;
+static IMP oCacheCachedAppearance = NULL;
+
+static UIImage *GICacheSubstitute2(id self, SEL _cmd, id icon, NSUInteger arg, IMP orig,
+                                   NSString *tag) {
+    NSString *bid = GIEngineBundleIDForIconObject(icon);
+    if (bid) {
+        UIImage *themed = GIEngineImageForBundleID(bid);
+        if (themed) { GIServeLog(tag, bid); return themed; }
+    }
+    if (orig) return ((id (*)(id, SEL, id, NSUInteger))orig)(self, _cmd, icon, arg);
+    return nil;
+}
+
+static UIImage *GICacheSubstitute3(id self, SEL _cmd, id icon, id appearance, NSUInteger arg,
+                                   IMP orig, NSString *tag) {
+    NSString *bid = GIEngineBundleIDForIconObject(icon);
+    if (bid) {
+        UIImage *themed = GIEngineImageForBundleID(bid);
+        if (themed) { GIServeLog(tag, bid); return themed; }
+    }
+    if (orig) return ((id (*)(id, SEL, id, id, NSUInteger))orig)(self, _cmd, icon, appearance, arg);
+    return nil;
+}
+
+static UIImage *HUnmaskedImageForIcon(id self, SEL _cmd, id icon) {
+    return GICacheSubstitute(self, _cmd, icon, oCacheUnmasked, @"unmasked");
+}
+
+static UIImage *HCachedUnmaskedImageForIcon(id self, SEL _cmd, id icon) {
+    return GICacheSubstitute(self, _cmd, icon, oCacheCachedUnmasked, @"cached-unmasked");
+}
+
+static UIImage *HRealImageForIconOptions(id self, SEL _cmd, id icon, NSUInteger options) {
+    return GICacheSubstitute2(self, _cmd, icon, options, oCacheRealOptions, @"real-opt");
+}
+
+static UIImage *HUnmaskedImageForIconOptions(id self, SEL _cmd, id icon, NSUInteger options) {
+    return GICacheSubstitute2(self, _cmd, icon, options, oCacheUnmaskedOptions, @"unmasked-opt");
+}
+
+static UIImage *HImageForIconAppearance(id self, SEL _cmd, id icon, id appearance,
+                                        NSUInteger options) {
+    return GICacheSubstitute3(self, _cmd, icon, appearance, options,
+                              oCacheAppearance, @"appearance");
+}
+
+static UIImage *HCachedImageForIconAppearance(id self, SEL _cmd, id icon, id appearance,
+                                              NSUInteger options) {
+    return GICacheSubstitute3(self, _cmd, icon, appearance, options,
+                              oCacheCachedAppearance, @"cached-appearance");
+}
+
 static UIImage *HImageForIcon(id self, SEL _cmd, id icon) {
     return GICacheSubstitute(self, _cmd, icon, oCacheImageForIcon, @"image");
 }
@@ -538,17 +599,31 @@ static UIImage *HAppGenerateIconImageWithInfo(id self, SEL _cmd, const void *inf
 // the currently enabled recovery configuration. Keep the helpers above so
 // future variant experiments remain independent.
 static void GIIconEngineInstallHooksOnce(void) {
-    // Keep only the four entry points that were exercised by the previous
-    // stable build. The newer options/appearance and iconImageWithInfo:
-    // variants have private ABI details that are not verified on this device.
     Class cache = NSClassFromString(@"SBHIconImageCache");
     if (cache) {
         GIHookMethod(cache, @selector(imageForIcon:),
                      (IMP)HImageForIcon, &oCacheImageForIcon);
         GIHookMethod(cache, @selector(cachedImageForIcon:),
                      (IMP)HCachedImageForIcon, &oCacheCachedImageForIcon);
-        GILogMain(@"SBHIconImageCache hooks: image=%d cached=%d",
-                  oCacheImageForIcon != NULL, oCacheCachedImageForIcon != NULL);
+        // iOS 17 renders most home-screen tiles through these variants, so a
+        // build that only hooks the two plain selectors serves stock art.
+        GIHookMethod(cache, NSSelectorFromString(@"unmaskedImageForIcon:"),
+                     (IMP)HUnmaskedImageForIcon, &oCacheUnmasked);
+        GIHookMethod(cache, NSSelectorFromString(@"cachedUnmaskedImageForIcon:"),
+                     (IMP)HCachedUnmaskedImageForIcon, &oCacheCachedUnmasked);
+        GIHookMethod(cache, NSSelectorFromString(@"realImageForIcon:options:"),
+                     (IMP)HRealImageForIconOptions, &oCacheRealOptions);
+        GIHookMethod(cache, NSSelectorFromString(@"unmaskedImageForIcon:options:"),
+                     (IMP)HUnmaskedImageForIconOptions, &oCacheUnmaskedOptions);
+        GIHookMethod(cache, NSSelectorFromString(@"imageForIcon:imageAppearance:options:"),
+                     (IMP)HImageForIconAppearance, &oCacheAppearance);
+        GIHookMethod(cache, NSSelectorFromString(@"cachedImageForIcon:imageAppearance:options:"),
+                     (IMP)HCachedImageForIconAppearance, &oCacheCachedAppearance);
+        GILogMain(@"SBHIconImageCache hooks: image=%d cached=%d unmasked=%d cachedU=%d realOpt=%d unmaskedOpt=%d appearance=%d cachedApp=%d",
+                  oCacheImageForIcon != NULL, oCacheCachedImageForIcon != NULL,
+                  oCacheUnmasked != NULL, oCacheCachedUnmasked != NULL,
+                  oCacheRealOptions != NULL, oCacheUnmaskedOptions != NULL,
+                  oCacheAppearance != NULL, oCacheCachedAppearance != NULL);
     } else {
         GILogMain(@"SBHIconImageCache missing");
     }
@@ -577,6 +652,41 @@ static void GIIconEngineInstallHooks(void) {
     });
 }
 
+// Ask SpringBoard to throw away the icon images it rendered before our hooks
+// existed. Every call is optional; a missing selector is not an error.
+static void GIRefreshIconCaches(void) {
+    @try {
+        Class controllerClass = NSClassFromString(@"SBIconController");
+        if (!controllerClass) return;
+        id shared = nil;
+        SEL sharedSel = NSSelectorFromString(@"sharedInstance");
+        if ([controllerClass respondsToSelector:sharedSel]) {
+            shared = ((id (*)(id, SEL))objc_msgSend)(controllerClass, sharedSel);
+        }
+        if (!shared) return;
+
+        NSArray<NSString *> *managerSelectors = @[@"iconManager", @"_iconManager"];
+        for (NSString *name in managerSelectors) {
+            SEL sel = NSSelectorFromString(name);
+            if (![shared respondsToSelector:sel]) continue;
+            id manager = ((id (*)(id, SEL))objc_msgSend)(shared, sel);
+            if (!manager) continue;
+
+            for (NSString *cacheSelName in @[@"purgeImageCache", @"_purgeImageCache",
+                                             @"reloadIconImages", @"_reloadIconImages"]) {
+                SEL cacheSel = NSSelectorFromString(cacheSelName);
+                if ([manager respondsToSelector:cacheSel]) {
+                    ((void (*)(id, SEL))objc_msgSend)(manager, cacheSel);
+                    GILogMain(@"cache refresh: %@", cacheSelName);
+                }
+            }
+            return;
+        }
+    } @catch (__unused NSException *exception) {
+        GILogMain(@"cache refresh failed");
+    }
+}
+
 // ---------------------------------------------------------------- lifecycle --
 
 void GIIconEngineInstall(void) {
@@ -597,6 +707,8 @@ void GIIconEngineInstall(void) {
     // which is also the recovery path for devices left in a respring loop.
     if (enabled) {
         GIIconEngineInstallHooks();
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ GIRefreshIconCaches(); });
     } else {
         GILogMain(@"icon hooks skipped (pack off or empty theme)");
     }

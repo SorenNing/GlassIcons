@@ -24,6 +24,29 @@
 
 extern void MSHookMessageEx(Class cls, SEL selector, IMP replacement, IMP *original);
 
+// Shared plain-text log so the service side is diagnosable from the same file
+// as the SpringBoard tweak (os_log is invisible to the user without Console).
+static void GISvcLog(NSString *format, ...) {
+    va_list args;
+    va_start(args, format);
+    NSString *message = [[NSString alloc] initWithFormat:format arguments:args];
+    va_end(args);
+    NSString *line = [NSString stringWithFormat:@"[%@] svc: %@\n", [NSDate date], message];
+    NSData *data = [line dataUsingEncoding:NSUTF8StringEncoding];
+    NSString *path = @"/var/mobile/Library/GlassIcons.log";
+    NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:path];
+    if (!handle) {
+        [[NSFileManager defaultManager] createFileAtPath:path contents:nil attributes:nil];
+        handle = [NSFileHandle fileHandleForWritingAtPath:path];
+    }
+    @try {
+        [handle seekToEndOfFile];
+        [handle writeData:data];
+    } @catch (__unused NSException *e) {
+    }
+    [handle closeFile];
+}
+
 // These declarations only let ARC apply the correct init ownership convention;
 // none is called before validating its exact method encoding and implementation.
 @interface NSObject (GIIconServicePrivateInitializers)
@@ -427,6 +450,7 @@ static id GIGenerate(id self, SEL cmd, id __autoreleasing *identifiers) {
     } @catch (__unused NSException *exception) {
         bool already = atomic_exchange_explicit(&gLoggedException, true, memory_order_relaxed);
         if (!already) os_log_error(OS_LOG_DEFAULT, "GIIconService: exception; returning stock image");
+        GISvcLog(@"exception in hook; returning stock image");
     } @finally {
         gInsideHook = false;
         atomic_fetch_sub_explicit(&gActiveRenders, 1, memory_order_relaxed);
@@ -445,9 +469,13 @@ static BOOL GIIsSupportedProcess(void) {
 }
 
 static void GIInstall(void) {
-    if (!GIIsSupportedProcess() || GIKillSwitchPresent()) return;
+    if (GIKillSwitchPresent()) { GISvcLog(@"kill switch present; not starting"); return; }
+    if (!GIIsSupportedProcess()) {
+        GISvcLog(@"unsupported process (%@); not starting", [[NSProcessInfo processInfo] processName]);
+        return;
+    }
     GIReloadSettings();
-    if (![GICurrentSettings()[@"enabled"] boolValue]) return; // startup is opt-in
+    if (![GICurrentSettings()[@"enabled"] boolValue]) { GISvcLog(@"service switch is off; hook not installed"); return; }
     gRequestClass = objc_getClass("ISGenerationRequest");
     gIconClass = objc_getClass("ISBundleIdentifierIcon");
     gDescriptorClass = objc_getClass("ISImageDescriptor");
@@ -459,6 +487,7 @@ static void GIInstall(void) {
         !GIExactMethod(gCacheClass, sel_registerName("initWithCGImage:scale:minimumSize:placeholder:iconSize:"), kCacheInitABI, kIFPath) ||
         !GIExactMethod(gImageClass, sel_registerName("initWithData:uuid:validationToken:"), kImageInitABI, kIFPath)) {
         os_log_error(OS_LOG_DEFAULT, "GIIconService: unsupported private ABI; hook not installed");
+        GISvcLog(@"unsupported private ABI; hook not installed");
         return;
     }
     Method method = class_getInstanceMethod(gRequestClass, generate);
@@ -478,6 +507,7 @@ static void GIInstall(void) {
         if (s1 == NOTIFY_STATUS_OK) notify_cancel(gSettingsToken);
         if (s2 == NOTIFY_STATUS_OK) notify_cancel(gPackToken);
         os_log_error(OS_LOG_DEFAULT, "GIIconService: notification setup failed; hook not installed");
+        GISvcLog(@"notification setup failed; hook not installed");
         return;
     }
     // Prevent the small installation window from having a NULL original. The
@@ -489,11 +519,13 @@ static void GIInstall(void) {
         // Substrate has no success return and can leave a partial hook; keep
         // the verified stock IMP published but permanently bypass replacement.
         os_log_error(OS_LOG_DEFAULT, "GIIconService: original IMP unavailable; stock-only mode");
+        GISvcLog(@"original IMP unavailable; stock-only mode");
         return;
     }
     atomic_store_explicit(&gOriginal, chained, memory_order_release);
     atomic_store_explicit(&gAdapterUsable, true, memory_order_release);
     os_log(OS_LOG_DEFAULT, "GIIconService: opt-in hook attempted with original IMP");
+    GISvcLog(@"hook installed; adapter active");
 }
 
 __attribute__((constructor)) static void GIIconServiceStart(void) {

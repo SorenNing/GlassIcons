@@ -6,6 +6,9 @@
 #import <CoreGraphics/CoreGraphics.h>
 #import <math.h>
 
+// Shared logger implemented in GlassIcons.m.
+extern void GILogMain(NSString *format, ...);
+
 // Glass badges (SBIconBadgeView / SBIconParallaxBadgeView).
 //
 // Deliberately transparent: no plate, no blur, no backdrop capture. The badge
@@ -173,6 +176,8 @@ static UIImage *GIBadgeTile(CGSize size, CGFloat scale) {
     }];
 }
 
+static NSUInteger gBadgeApplyCount = 0;
+
 static void GIBadgeUpdate(UIView *view) {
     if (!view || CGRectIsEmpty(view.bounds)) return;
 
@@ -189,6 +194,11 @@ static void GIBadgeUpdate(UIView *view) {
     if (scale <= 0.0) scale = UIScreen.mainScreen.scale;
     NSString *signature = GIBadgeSignature(view.bounds.size, scale);
     NSString *last = objc_getAssociatedObject(view, kBadgeSignatureKey);
+    if (gBadgeApplyCount < 20) {
+        gBadgeApplyCount++;
+        GILogMain(@"badge apply %@ %.0fx%.0f", NSStringFromClass([view class]),
+                  view.bounds.size.width, view.bounds.size.height);
+    }
 
     if (overlay &&
         CGRectEqualToRect(overlay.frame, view.bounds) &&
@@ -241,6 +251,7 @@ static void GIBadgeInstall(void) {
     Class badgeClass = objc_getClass("SBIconBadgeView");
     Class parallaxClass = objc_getClass("SBIconParallaxBadgeView");
 
+    if (!badgeClass) GILogMain(@"badge: SBIconBadgeView missing");
     if (badgeClass && !gBadgeHookInstalled) {
         SEL selector = @selector(layoutSubviews);
         Method method = class_getInstanceMethod(badgeClass, selector);
@@ -249,6 +260,7 @@ static void GIBadgeInstall(void) {
             gBadgeOriginalLayout = method_getImplementation(method);
             method_setImplementation(method, replacement);
             gBadgeHookInstalled = YES;
+            GILogMain(@"badge hook ok: SBIconBadgeView layoutSubviews");
         }
     }
     if (parallaxClass && !gParallaxHookInstalled) {
@@ -259,6 +271,7 @@ static void GIBadgeInstall(void) {
             gParallaxOriginalLayout = method_getImplementation(method);
             method_setImplementation(method, replacement);
             gParallaxHookInstalled = YES;
+            GILogMain(@"badge hook ok: SBIconParallaxBadgeView layoutSubviews");
         }
     }
 }

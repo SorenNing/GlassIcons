@@ -48,8 +48,8 @@ void GILogMain(NSString *format, ...) {
 // ============================================================
 
 static BOOL gEnabled = YES;
-static CGFloat gIntensity = 0.35;
-static CGFloat gRim = 0.50;
+static CGFloat gIntensity = 0.55;
+static CGFloat gRim = 0.85;
 static CGFloat gSheen = 0.30;
 static BOOL gBadgeGlass = YES;
 static CFAbsoluteTime gLastPrefsLoad = 0;
@@ -203,7 +203,10 @@ static void GIUpdateOverlay(UIView *view) {
     rim.frame = overlay.bounds;
     rim.cornerRadius = overlay.cornerRadius;
     rim.borderWidth = MAX(0.6, MIN(1.0, MIN(view.bounds.size.width, view.bounds.size.height) * 0.030));
-    rim.borderColor = [UIColor colorWithRed:1 green:1 blue:1 alpha:gRim * strength].CGColor;
+    CGFloat edgeAlpha = gRim * (0.35 + strength);
+    if (edgeAlpha > 1.0) edgeAlpha = 1.0;
+    if (edgeAlpha < 0.0) edgeAlpha = 0.0;
+    rim.borderColor = [UIColor colorWithRed:1 green:1 blue:1 alpha:edgeAlpha].CGColor;
     [overlay addSublayer:rim];
 
     [view.layer addSublayer:overlay];
