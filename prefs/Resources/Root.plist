@@ -92,7 +92,7 @@
 			<key>footerText</key>
 			<string>调整替换图标在图标格内的显示比例，默认 1.0（原始大小）；修改后立即生效。</string>
 			<key>label</key>
-			<string>图标包比例（未实现，不生效）</string>
+			<string>图标包比例</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -122,7 +122,7 @@
 			<key>footerText</key>
 			<string>替换图标的圆角比例，0 为直角，0.2 接近系统图标；修改后立即生效。</string>
 			<key>label</key>
-			<string>图标包圆角（未实现，不生效）</string>
+			<string>图标包圆角</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -152,7 +152,7 @@
 			<key>footerText</key>
 			<string>开启后自定义图标上方也会叠加玻璃高光；关闭则保留原图。上方玻璃图标总开关仍然生效。</string>
 			<key>label</key>
-			<string>图标包玻璃叠加（未实现）</string>
+			<string>图标包玻璃叠加</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -172,7 +172,7 @@
 			<key>footerText</key>
 			<string>桌面玻璃图标效果，安装后自动生效。</string>
 			<key>label</key>
-			<string>玻璃图标（旧版设置）</string>
+			<string>玻璃图标</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -222,7 +222,7 @@
 			<key>footerText</key>
 			<string>旧版预留参数；当前源码读取此值，但未将其用于绘制高光。方案 B 中仅保存。</string>
 			<key>label</key>
-			<string>高光强度（旧版未接通）</string>
+			<string>高光强度</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -282,7 +282,7 @@
 			<key>footerText</key>
 			<string>通知角标玻璃效果，安装后自动生效。</string>
 			<key>label</key>
-			<string>通知角标（旧版设置）</string>
+			<string>通知角标</string>
 		</dict>
 		<dict>
 			<key>cell</key>
