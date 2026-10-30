@@ -9,6 +9,7 @@ TWEAK_NAME = GIIconService
 GIIconService_FILES = GIIconService.m
 GIIconService_CFLAGS = -fobjc-arc -Wall -Wextra
 GIIconService_FRAMEWORKS = Foundation CoreFoundation CoreGraphics ImageIO
+GIIconService_LIBRARIES = substrate
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 
