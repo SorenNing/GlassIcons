@@ -8,7 +8,7 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>图标服务开关，默认开启。安装包会自动重启图标服务，一般不需要手动操作。关闭开关并重启设备后，服务替换才会完全停止。异常时可用安全模式或卸载恢复。</string>
+			<string>图标替换总开关，默认开启。安装包会自动重启图标服务，不需要手动操作。关闭后重启设备即可完全停止替换。异常时可用安全模式或卸载恢复。</string>
 			<key>label</key>
 			<string>方案 B · 图标服务安全开关</string>
 		</dict>
@@ -30,21 +30,9 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>旧图标替换开关 IconPackEnabled 默认开启，但不能单独开启服务；方案 B 替换还需要上方 IconServiceEnabled 开启。更改其中一个不会改动另一个。默认主题使用 /var/mobile/Library/GlassIcons/Icons，其他主题位于 /var/mobile/Library/GlassIcons/Themes；服务会优先尝试 /var/jb 下的同名路径。文件名使用 App Bundle ID，如 com.tencent.xin.png（可加 @2x/@3x）；需为单帧、方形、正常方向的 PNG，最多 4 MB、2048×2048 像素。选择或重载不保证服务已收到或桌面缓存已更新。</string>
+			<string>图标替换由上方服务开关统一控制，默认开启，无需再打开其他开关。默认主题使用 /var/mobile/Library/GlassIcons/Icons，其他主题位于 /var/mobile/Library/GlassIcons/Themes；服务会优先尝试 /var/jb 下的同名路径。文件名使用 App Bundle ID，如 com.tencent.xin.png（可加 @2x/@3x）；需为单帧、方形、正常方向的 PNG，最多 4 MB、2048×2048 像素。选择或重载不保证服务已收到或桌面缓存已更新。</string>
 			<key>label</key>
 			<string>图标包与主题</string>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>default</key>
-			<true/>
-			<key>defaults</key>
-			<string>com.soren.glassicons</string>
-			<key>key</key>
-			<string>IconPackEnabled</string>
-			<key>label</key>
-			<string>图标替换（需同时开启服务）</string>
 		</dict>
 		<dict>
 			<key>action</key>

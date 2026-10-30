@@ -162,17 +162,12 @@ static NSString *GIEngineIndexKeyForFilename(NSString *filename) {
 }
 
 // Caller must hold gEngineIndexLock, or be inside the one-time setup.
-static void GIEngineBuildIconIndexLocked(void) {
-    if (!gEngineIndex) gEngineIndex = [NSMutableDictionary dictionary];
-    [gEngineIndex removeAllObjects];
-    [gEngineMisses removeAllObjects];
-
-    NSString *themeName = GIEngineSelectedThemeName();
+static NSUInteger GIEngineScanDirs(NSArray<NSString *> *dirs, BOOL strictSymlinks) {
     NSFileManager *fm = [NSFileManager defaultManager];
     NSUInteger scanned = 0;
-
-    for (NSString *dir in GIEngineIconDirs(themeName)) {
+    for (NSString *dir in dirs) {
         NSArray<NSString *> *names = [fm contentsOfDirectoryAtPath:dir error:NULL];
+        NSUInteger here = 0;
         for (NSString *name in names) {
             if (![[name pathExtension].lowercaseString isEqualToString:@"png"]) continue;
 
@@ -184,7 +179,7 @@ static void GIEngineBuildIconIndexLocked(void) {
             if (gEngineIndex[key] != nil) continue;
 
             NSString *path = [dir stringByAppendingPathComponent:name];
-            if (themeName) {
+            if (strictSymlinks) {
                 // Do not let a named theme's PNG symlink point outside its root.
                 const char *bytes = path.fileSystemRepresentation;
                 struct stat st;
@@ -192,7 +187,28 @@ static void GIEngineBuildIconIndexLocked(void) {
             }
             gEngineIndex[key] = path;
             scanned++;
+            here++;
         }
+        GILogMain(@"  dir %@: %lu png (%lu total files)", dir, (unsigned long)here,
+                  (unsigned long)names.count);
+    }
+    return scanned;
+}
+
+static void GIEngineBuildIconIndexLocked(void) {
+    if (!gEngineIndex) gEngineIndex = [NSMutableDictionary dictionary];
+    [gEngineIndex removeAllObjects];
+    [gEngineMisses removeAllObjects];
+
+    NSString *themeName = GIEngineSelectedThemeName();
+    NSUInteger scanned = GIEngineScanDirs(GIEngineIconDirs(themeName), themeName != nil);
+
+    // A selected theme that exists but holds no icons must not block the
+    // legacy Icons folder; the user's PNGs usually live there.
+    if (scanned == 0 && themeName) {
+        GILogMain(@"theme %@ has no icons; falling back to default Icons", themeName);
+        scanned = GIEngineScanDirs(GIEngineIconDirs(nil), NO);
+        themeName = nil;
     }
 
     GILogMain(@"icon index built: %lu entries (theme: %@)",
@@ -280,10 +296,15 @@ static BOOL GIEnginePackEnabled(void) {
     cached = __atomic_load_n(&gGIPackEnabledCache, __ATOMIC_RELAXED);
     if (cached < 0) {
         CFPropertyListRef value = CFPreferencesCopyAppValue(
-            CFSTR("IconPackEnabled"), CFSTR("com.soren.glassicons"));
-        BOOL enabled = value && CFGetTypeID(value) == CFBooleanGetTypeID()
-            ? CFBooleanGetValue((CFBooleanRef)value) : YES;
-        if (value) CFRelease(value);
+            CFSTR("IconServiceEnabled"), CFSTR("com.soren.glassicons"));
+        // One switch governs replacement: the service switch. A stored value
+        // of NO disables it; a missing key means enabled.
+        BOOL enabled = YES;
+        if (value) {
+            enabled = CFGetTypeID(value) == CFBooleanGetTypeID()
+                ? CFBooleanGetValue((CFBooleanRef)value) : YES;
+            CFRelease(value);
+        }
         cached = enabled ? 1 : 0;
         __atomic_store_n(&gGIPackEnabledCache, cached, __ATOMIC_RELAXED);
     }
