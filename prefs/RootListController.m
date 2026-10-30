@@ -245,26 +245,20 @@ static id GIValidatedPreferenceValue(id value, id fallback, BOOL writing) {
 }
 
 -(void)setPreferenceValue:(id)value specifier:(PSSpecifier *)specifier {
-    id key = [specifier propertyForKey:@"key"];
-    id domain = [specifier propertyForKey:@"defaults"];
-    if (![key isKindOfClass:[NSString class]] || ![key length]) return;
-    if (![domain isKindOfClass:[NSString class]] || ![domain length]) domain = kGISettingsDomain;
+    // Validate first, then let PSListController do the real write so the cell
+    // and its cached value stay in sync (an override that skips super leaves
+    // every switch visually stuck).
     id validated = GIValidatedPreferenceValue(value, [specifier propertyForKey:@"default"], YES);
     if (!validated) return;
-    CFPreferencesSetAppValue((__bridge CFStringRef)key, (__bridge CFPropertyListRef)validated,
-                             (__bridge CFStringRef)domain);
-    if (!CFPreferencesAppSynchronize((__bridge CFStringRef)domain)) {
-        [self glassAlertWithTitle:@"设置同步失败"
-                          message:@"无法确认设置已写入；进程内缓存可能已改变。请检查权限并重新打开设置核对。"
-                         copyPath:nil];
-        return;
-    }
+
+    [super setPreferenceValue:validated specifier:specifier];
+
+    id key = [specifier propertyForKey:@"key"];
+    if (![key isKindOfClass:[NSString class]]) return;
     GIPostNotification(kGISettingsChangedNotification);
-    if ([key isEqualToString:@"IconPackEnabled"]) GIPostNotification(kGIIconPackChangedNotification);
-    if ([key isEqualToString:@"IconServiceEnabled"]) {
-        [self glassAlertWithTitle:@"服务开关已保存"
-                          message:@"更改后需重启 iconservicesagent 进程；关闭开关不会卸载已运行进程中的 hook。设置页不会自动重启进程，也无法确认更改已生效。旧的 IconPackEnabled 设置保持不变，图标替换需要两个开关同时开启。"
-                         copyPath:nil];
+    if ([key isEqualToString:@"IconServiceEnabled"] ||
+        [key isEqualToString:@"IconPackEnabled"]) {
+        GIPostNotification(kGIIconPackChangedNotification);
     }
 }
 

@@ -32,6 +32,11 @@ static NSString *const kGIEngineRootHideThemesDir = @"/var/jb/var/mobile/Library
 
 static NSString *const kGIEngineLogPath = @"/var/mobile/Library/GlassIcons.log";
 
+// Forward declarations: the name-fallback helpers below appear before the
+// definitions of these two.
+static BOOL GIEnginePackEnabled(void);
+static UIImage *GIApplyPackStyle(UIImage *image);
+
 // ---------------------------------------------------------------- logging ----
 
 static void GILogMain(NSString *fmt, ...) {
@@ -213,6 +218,15 @@ static void GIEngineBuildIconIndexLocked(void) {
 
     GILogMain(@"icon index built: %lu entries (theme: %@)",
               (unsigned long)scanned, themeName ?: @"Default");
+
+    // A short sample makes the pack's naming convention visible in the log.
+    NSArray<NSString *> *sample = [gEngineIndex.allKeys sortedArrayUsingSelector:@selector(compare:)];
+    NSUInteger shown = MIN((NSUInteger)6, sample.count);
+    if (shown) {
+        NSMutableArray<NSString *> *joined = [NSMutableArray array];
+        for (NSUInteger i = 0; i < shown; i++) [joined addObject:sample[i]];
+        GILogMain(@"index sample: %@", [joined componentsJoinedByString:@" | "]);
+    }
 }
 
 // Returns the theme PNG path for a bundle id, or nil.
@@ -239,6 +253,64 @@ static NSString *GIEngineFindIconPath(NSString *bundleID) {
 
     [gEngineIndexLock unlock];
     return path;
+}
+
+// --------------------------------------------------------- name fallback ----
+//
+// Many shared icon packs are not named by bundle id (Chinese/display names are
+// common). When the id lookup misses, retry with the icon's display name so a
+// correctly drawn pack is not reported as "no icons".
+
+static NSString *GIEngineNormalizedName(NSString *name) {
+    if (![name isKindOfClass:[NSString class]] || name.length == 0) return nil;
+    NSMutableString *out = [NSMutableString stringWithCapacity:name.length];
+    for (NSUInteger i = 0; i < name.length; i++) {
+        unichar c = [name characterAtIndex:i];
+        if ([[NSCharacterSet whitespaceAndNewlineCharacterSet] characterIsMember:c]) continue;
+        [out appendFormat:@"%C", c];
+    }
+    return out.length ? out : nil;
+}
+
+static NSArray<NSString *> *GIEngineNamesForIconObject(id icon) {
+    NSMutableArray<NSString *> *names = [NSMutableArray array];
+    NSArray<NSString *> *sels = @[@"displayName", @"bestDisplayName", @"applicationDisplayName"];
+    for (NSString *name in sels) {
+        SEL sel = NSSelectorFromString(name);
+        if (![icon respondsToSelector:sel]) continue;
+        id value = ((id (*)(id, SEL))objc_msgSend)(icon, sel);
+        if ([value isKindOfClass:[NSString class]] && [value length]) [names addObject:value];
+    }
+    SEL appSel = NSSelectorFromString(@"application");
+    if ([icon respondsToSelector:appSel]) {
+        id app = ((id (*)(id, SEL))objc_msgSend)(icon, appSel);
+        for (NSString *name in @[@"displayName", @"localizedName"]) {
+            SEL sel = NSSelectorFromString(name);
+            if (![app respondsToSelector:sel]) continue;
+            id value = ((id (*)(id, SEL))objc_msgSend)(app, sel);
+            if ([value isKindOfClass:[NSString class]] && [value length]) [names addObject:value];
+        }
+    }
+    return names;
+}
+
+static NSString *GIEngineFindIconPathForName(NSString *name) {
+    if (name.length == 0) return nil;
+    NSString *path = nil;
+    [GIEngineIndexLock() lock];
+    if (!gEngineIndex) GIEngineBuildIconIndexLocked();
+    path = gEngineIndex[name];
+    if (!path) path = gEngineIndex[GIEngineNormalizedName(name) ?: @""];
+    [GIEngineIndexLock() unlock];
+    return path;
+}
+
+static UIImage *GIEngineImageForName(NSString *name) {
+    if (!GIEnginePackEnabled() || name.length == 0) return nil;
+    NSString *path = GIEngineFindIconPathForName(name);
+    if (!path) return nil;
+    UIImage *image = [UIImage imageWithContentsOfFile:path];
+    return image ? GIApplyPackStyle(image) : nil;
 }
 
 // ------------------------------------------------------------ bundle id out --
@@ -488,6 +560,10 @@ static UIImage *GICacheSubstitute(id self, SEL _cmd, id icon, IMP orig, NSString
         UIImage *themed = GIEngineImageForBundleID(bid);
         if (themed) { GIServeLog(tag, bid); return themed; }
     }
+    for (NSString *name in GIEngineNamesForIconObject(icon)) {
+        UIImage *themed = GIEngineImageForName(name);
+        if (themed) { GIServeLog(tag, [@"name:" stringByAppendingString:name]); return themed; }
+    }
     if (orig) return ((id (*)(id, SEL, id))orig)(self, _cmd, icon);
     return nil;
 }
@@ -510,6 +586,10 @@ static UIImage *GICacheSubstitute2(id self, SEL _cmd, id icon, NSUInteger arg, I
         UIImage *themed = GIEngineImageForBundleID(bid);
         if (themed) { GIServeLog(tag, bid); return themed; }
     }
+    for (NSString *name in GIEngineNamesForIconObject(icon)) {
+        UIImage *themed = GIEngineImageForName(name);
+        if (themed) { GIServeLog(tag, name); return themed; }
+    }
     if (orig) return ((id (*)(id, SEL, id, NSUInteger))orig)(self, _cmd, icon, arg);
     return nil;
 }
@@ -520,6 +600,10 @@ static UIImage *GICacheSubstitute3(id self, SEL _cmd, id icon, id appearance, NS
     if (bid) {
         UIImage *themed = GIEngineImageForBundleID(bid);
         if (themed) { GIServeLog(tag, bid); return themed; }
+    }
+    for (NSString *name in GIEngineNamesForIconObject(icon)) {
+        UIImage *themed = GIEngineImageForName(name);
+        if (themed) { GIServeLog(tag, name); return themed; }
     }
     if (orig) return ((id (*)(id, SEL, id, id, NSUInteger))orig)(self, _cmd, icon, appearance, arg);
     return nil;
