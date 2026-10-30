@@ -1,367 +1,506 @@
-// GIIconEngine.m — icon-pack replacement engine (v0.35)
-// Data-layer hooks return original themed PNG; passive layout hook applies image on demand.
-// No active purge/reload, no forced scaling — preserves system rendering.
-// Glass overlay and badges are untouched.
+// GIIconEngine.m
+// GlassIcons icon pack engine (SpringBoard side).
+//
+// Responsibilities:
+//   1. Build an index of /var/mobile/Library/GlassIcons/Icons/*.png keyed by bundle id.
+//   2. Answer "do we have a theme image for this icon?" for the view layer.
+//   3. Hook the SpringBoard image generation/caching entry points and substitute
+//      the theme image when one exists.
+//
+// Deliberately NOT included: the iconservicesagent hooks. The ISGenerationRequest
+// method name used there was guessed, so it is removed rather than shipped dead.
+//
+// Every hook keeps its own original IMP. Sharing one variable between two
+// selectors of the same class silently redirects the second hook's fallback into
+// the first method, which is a crash / garbage image waiting to happen.
+
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
-#import <CoreFoundation/CoreFoundation.h>
-#import <dispatch/dispatch.h>
-#import <notify.h>
 
-extern void GILogMain(NSString *format, ...);
+// ---------------------------------------------------------------- constants --
 
-static NSString *const kGIEngineIconDirs[] = {
-    @"/var/mobile/Library/GlassIcons/Icons",
-    @"/var/jb/var/mobile/Library/GlassIcons/Icons",
-};
+static NSString *const kGIEngineDefaultDir = @"/var/mobile/Library/GlassIcons/Icons";
+static NSString *const kGIEngineRootHideDir = @"/var/jb/var/mobile/Library/GlassIcons/Icons";
 
-void GIIconEngineInstall(void);
-void GIIconEngineReload(void);
-BOOL GIEngineHasIconForBundleID(NSString *bid);
-BOOL GIEngineIconHasPackIcon(id icon);
+static NSString *const kGIEngineLogPath = @"/var/mobile/Library/GlassIcons.log";
 
-static NSString *GIEngineFindIconPath(NSString *bid);
-static id GIEngineBundleIDForIcon(id icon);
+// ---------------------------------------------------------------- logging ----
 
-#pragma mark - engine state
+static void GILogMain(NSString *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    NSString *line = [[NSString alloc] initWithFormat:fmt arguments:ap];
+    va_end(ap);
 
-static BOOL gEngineEnabled = NO;
-static NSMutableDictionary<NSString *, UIImage *> *gEngineCache = nil;
-static NSMutableSet<NSString *> *gEngineMisses = nil;
-static NSMutableDictionary<NSString *, NSString *> *gEngineIconDirIndex = nil;
-static NSLock *gEngineIndexLock = nil;
-static NSUInteger gEngineServed = 0;
+    NSLog(@"[GlassIcons] %@", line);
 
-static BOOL GIEngineUserEnabled(void) {
-    CFPropertyListRef ref = CFPreferencesCopyAppValue(CFSTR("IconPackEnabled"), CFSTR("com.soren.glassicons"));
-    BOOL enabled = YES;
-    if (ref) {
-        enabled = CFGetTypeID(ref) == CFBooleanGetTypeID() ? CFBooleanGetValue((CFBooleanRef)ref) : YES;
-        CFRelease(ref);
-    }
-    return enabled;
-}
+    static dispatch_queue_t logQueue;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        logQueue = dispatch_queue_create("com.soren.glassicons.log", DISPATCH_QUEUE_SERIAL);
+    });
 
-static void GIEngineInitIconIndex(void);
-static void GIEngineBuildIconIndex(void);
-static NSString *GIEngineFindIconPath(NSString *bid);
+    dispatch_async(logQueue, ^{
+        NSString *stamped = [NSString stringWithFormat:@"[%@] %@\n",
+                             [NSDate date], line];
+        NSData *data = [stamped dataUsingEncoding:NSUTF8StringEncoding];
+        NSFileManager *fm = [NSFileManager defaultManager];
 
-static BOOL GIEngineHasIcons(void) {
-    for (NSUInteger i = 0; i < sizeof(kGIEngineIconDirs)/sizeof(kGIEngineIconDirs[0]); i++) {
-        NSArray *files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:kGIEngineIconDirs[i] error:NULL];
-        NSUInteger pngCount = 0;
-        for (NSString *file in files) {
-            if ([file hasSuffix:@".png"]) pngCount++;
+        if (![fm fileExistsAtPath:kGIEngineLogPath]) {
+            [data writeToFile:kGIEngineLogPath atomically:YES];
+            return;
         }
-        if (pngCount > 0) {
-            GILogMain(@"iconpack dir contents = %lu png files (%lu total) at %s",
-                      (unsigned long)pngCount, (unsigned long)files.count, kGIEngineIconDirs[i].UTF8String);
-            return YES;
-        }
-    }
-    GILogMain(@"iconpack dir empty (no png) at all known paths");
-    return NO;
-}
-
-#pragma mark - image lookup
-
-// Icon file lookup with directory scanning and fuzzy matching.
-// Does not assume file name == bundle ID exactly.
-
-static NSString *kEngineIconSuffixes[] = {
-    @"@3x.png", @"@2x.png", @".png",
-};
-
-// Build an index of all icon files found in known directories.
-// CALLER MUST HOLD gEngineIndexLock.
-static void GIEngineBuildIconIndex(void) {
-    if (!gEngineIconDirIndex) {
-        gEngineIconDirIndex = [NSMutableDictionary dictionary];
-    }
-    if (gEngineIconDirIndex[@"_built"]) return;
-    for (NSUInteger di = 0; di < sizeof(kGIEngineIconDirs) / sizeof(kGIEngineIconDirs[0]); di++) {
-        NSString *dir = kGIEngineIconDirs[di];
-        NSArray *files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:NULL];
-        for (NSString *file in files) {
-            if (![file hasSuffix:@".png"]) continue;
-            NSString *base = [file stringByDeletingPathExtension];
-            base = [base stringByReplacingOccurrencesOfString:@"@3x" withString:@""];
-            base = [base stringByReplacingOccurrencesOfString:@"@2x" withString:@""];
-            if (!gEngineIconDirIndex[base]) {
-                gEngineIconDirIndex[base] = [dir stringByAppendingPathComponent:file];
-            }
-        }
-    }
-    gEngineIconDirIndex[@"_built"] = @"yes";
-}
-
-static void GIEngineInitIconIndex(void) {
-    if (!gEngineIndexLock) gEngineIndexLock = [NSLock new];
-    [gEngineIndexLock lock];
-    if (!gEngineIconDirIndex) {
-        gEngineIconDirIndex = [NSMutableDictionary dictionary];
-        GIEngineBuildIconIndex();
-    }
-    [gEngineIndexLock unlock];
-}
-
-// Attempt 1: Exact bundle ID match (bundleID.png, bundleID@3x.png, etc.)
-// Attempt 2: Base name index match
-// Attempt 3: Substring match (bundleID contains file base, or vice versa)
-static NSString *GIEngineFindIconPath(NSString *bid) {
-    if (!bid || !bid.length) return nil;
-
-    // Attempt 1: Exact match across known directories and suffixes
-    for (NSUInteger di = 0; di < sizeof(kGIEngineIconDirs) / sizeof(kGIEngineIconDirs[0]); di++) {
-        for (NSUInteger si = 0; si < sizeof(kEngineIconSuffixes) / sizeof(kEngineIconSuffixes[0]); si++) {
-            NSString *path = [kGIEngineIconDirs[di] stringByAppendingPathComponent:
-                              [bid stringByAppendingString:kEngineIconSuffixes[si]]];
-            if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
-                return path;
-            }
-        }
-    }
-
-    // Attempt 2: Indexed base name match (held under index lock)
-    if (!gEngineIndexLock) gEngineIndexLock = [NSLock new];
-    [gEngineIndexLock lock];
-    GIEngineBuildIconIndex();
-    NSString *exact = gEngineIconDirIndex[bid];
-    if (exact && ![bid isEqualToString:@"_built"]) { [gEngineIndexLock unlock]; return exact; }
-
-    // Attempt 3: Fuzzy substring match
-    NSString *bestMatch = nil;
-    NSUInteger bestLen = 0;
-    for (NSString *key in gEngineIconDirIndex) {
-        if (![key isKindOfClass:[NSString class]]) continue;
-        if ([key isEqualToString:@"_built"]) continue;
-        if ([bid containsString:key] && key.length > bestLen) {
-            bestMatch = gEngineIconDirIndex[key];
-            bestLen = key.length;
-        }
-    }
-    if (bestMatch) { [gEngineIndexLock unlock]; return bestMatch; }
-
-    // Attempt 4: Reverse — file base name contains bundleID
-    for (NSString *key in gEngineIconDirIndex) {
-        if (![key isKindOfClass:[NSString class]]) continue;
-        if ([key isEqualToString:@"_built"]) continue;
-        if ([key containsString:bid] && bid.length > bestLen) {
-            bestMatch = gEngineIconDirIndex[key];
-            bestLen = bid.length;
-        }
-    }
-    [gEngineIndexLock unlock];
-    return bestMatch;
-}
-
-static UIImage *GIEngineImageForBundleID(NSString *bid) {
-    if (!gEngineEnabled || !bid.length) return nil;
-    if (!gEngineCache) gEngineCache = [NSMutableDictionary dictionary];
-    if (!gEngineMisses) gEngineMisses = [NSMutableSet set];
-
-    @synchronized (gEngineCache) {
-        UIImage *cached = gEngineCache[bid];
-        if (cached) return cached;
-    }
-
-    NSString *path = GIEngineFindIconPath(bid);
-    if (!path) {
-        @synchronized (gEngineMisses) {
-            if (gEngineMisses.count < 200) {
-                [gEngineMisses addObject:bid];
-            }
-        }
-        GILogMain(@"icon miss %@ (searched: %@, %@)", bid, kGIEngineIconDirs[0], kGIEngineIconDirs[1]);
-        return nil;
-    }
-
-    UIImage *img = [UIImage imageWithContentsOfFile:path];
-    if (!img) {
-        @synchronized (gEngineMisses) {
-            if (gEngineMisses.count < 200) {
-                [gEngineMisses addObject:bid];
-            }
-        }
-        GILogMain(@"icon fail load %@ at %@", bid, path);
-        return nil;
-    }
-    GILogMain(@"icon found %@ at %@", bid, path);
-    // Return the original image and let SpringBoard scale to the requested
-    // size. Pre-resampling to a fixed 60pt@3x made icons blurry whenever the
-    // system displayed them at other sizes (dock, App Library, Spotlight).
-    @synchronized (gEngineCache) {
-        gEngineCache[bid] = img;
-    }
-    return img;
-}
-
-#pragma mark - icon / bundle id discovery
-
-static id GIEngineBundleIDForIcon(id icon) {
-    if (!icon) return nil;
-    for (NSString *sel in @[@"applicationBundleID", @"bundleIdentifier", @"leafIdentifier", @"iconIdentifier"]) {
-        SEL s = NSSelectorFromString(sel);
-        if ([icon respondsToSelector:s]) {
-            id v = ((id (*)(id, SEL))objc_msgSend)(icon, s);
-            if ([v isKindOfClass:[NSString class]] && [v length]) return v;
-        }
-    }
-    for (NSString *sel in @[@"icon", @"_icon", @"representedIcon", @"applicationIcon", @"item"]) {
-        SEL s = NSSelectorFromString(sel);
-        if (![icon respondsToSelector:s]) continue;
-        id inner = ((id (*)(id, SEL))objc_msgSend)(icon, s);
-        if (!inner || inner == icon) continue;
-        for (NSString *idSel in @[@"applicationBundleID", @"bundleIdentifier", @"leafIdentifier", @"iconIdentifier"]) {
-            SEL candidate = NSSelectorFromString(idSel);
-            if (![inner respondsToSelector:candidate]) continue;
-            id value = ((id (*)(id, SEL))objc_msgSend)(inner, candidate);
-            if ([value isKindOfClass:[NSString class]] && [value length]) return value;
-        }
-    }
-    for (NSString *key in @[@"icon", @"_icon"]) {
+        NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:kGIEngineLogPath];
+        if (!fh) return;
         @try {
-            id inner = [icon valueForKey:key];
-            if (inner && inner != icon) {
-                id value = GIEngineBundleIDForIcon(inner);
-                if (value) return value;
-            }
-        } @catch (__unused NSException *exception) {}
-    }
-    return nil;
-}
-
-#pragma mark - icon pack lookup (public API)
-
-BOOL GIEngineHasIconForBundleID(NSString *bid) {
-    if (!bid || !bid.length) return NO;
-    if (!gEngineEnabled) return NO;
-    @synchronized (gEngineCache) {
-        if (gEngineCache[bid]) return YES;
-    }
-    @synchronized (gEngineMisses) {
-        if (gEngineMisses.count && [gEngineMisses containsObject:bid]) return NO;
-    }
-    return GIEngineFindIconPath(bid) != nil;
-}
-
-BOOL GIEngineIconHasPackIcon(id icon) {
-    NSString *bid = GIEngineBundleIDForIcon(icon);
-    return GIEngineHasIconForBundleID(bid);
-}
-
-#pragma mark - data-layer hooks
-
-static IMP oImageForIcon, oCachedImageForIcon, oGenerateIcon, oLeafGenerateIcon;
-
-static void GIHook(Class cls, SEL sel, IMP repl, IMP *orig) {
-    if (!cls) { GILogMain(@"hook: class missing for %@", NSStringFromSelector(sel)); return; }
-    Method method = class_getInstanceMethod(cls, sel);
-    if (!method) { GILogMain(@"hook: %@ has no %@", cls, NSStringFromSelector(sel)); return; }
-    // Save original IMP first (needed for both paths).
-    *orig = method_getImplementation(method);
-    // class_addMethod adds to cls's own method list, shadowing any
-    // inherited implementation — safe for all subclasses. Falls back to
-    // method_setImplementation only if the selector already exists in
-    // cls's own method list (class_addMethod returns NO).
-    const char *types = method_getTypeEncoding(method);
-    if (class_addMethod(cls, sel, repl, types)) {
-        GILogMain(@"hook ok: %@ %@ (class_addMethod)", cls, NSStringFromSelector(sel));
-    } else {
-        method_setImplementation(method, repl);
-        GILogMain(@"hook ok: %@ %@ (method_setImplementation)", cls, NSStringFromSelector(sel));
-    }
-}
-
-static id HImageForIcon(id self, SEL _cmd, id icon) {
-    NSString *bid = GIEngineBundleIDForIcon(icon);
-    UIImage *img = GIEngineImageForBundleID(bid);
-    if (img) {
-        if (++gEngineServed <= 30) GILogMain(@"cache serve %@", bid);
-        return img;
-    }
-    return ((id (*)(id, SEL, id))oImageForIcon)(self, _cmd, icon);
-}
-
-static id HCachedImageForIcon(id self, SEL _cmd, id icon) {
-    NSString *bid = GIEngineBundleIDForIcon(icon);
-    UIImage *img = GIEngineImageForBundleID(bid);
-    if (img) return img;
-    return ((id (*)(id, SEL, id))oCachedImageForIcon)(self, _cmd, icon);
-}
-
-static id HLeafGenerateIcon(id self, SEL _cmd, id info) {
-    NSString *bid = GIEngineBundleIDForIcon(self);
-    UIImage *img = GIEngineImageForBundleID(bid);
-    if (img) {
-        if (++gEngineServed <= 30) GILogMain(@"leaf generate serve %@", bid);
-        return img;
-    }
-    return ((id (*)(id, SEL, id))oLeafGenerateIcon)(self, _cmd, info);
-}
-
-static id HGenerateIcon(id self, SEL _cmd, id info) {
-    NSString *bid = GIEngineBundleIDForIcon(self);
-    UIImage *img = GIEngineImageForBundleID(bid);
-    if (img) {
-        if (++gEngineServed <= 30) GILogMain(@"generate serve %@", bid);
-        return img;
-    }
-    return ((id (*)(id, SEL, id))oGenerateIcon)(self, _cmd, info);
-}
-
-#pragma mark - passive layout hook
-
-// Layout hooks disabled to prevent SpringBoard restart loop.
-// Data-layer hooks (cache + provider) are the only replacement path.
-
-#pragma mark - install / reload
-
-static dispatch_once_t gEngineOnce;
-
-static void GIIconEngineInstallHooks(void) {
-    dispatch_once(&gEngineOnce, ^{
-        // SBHIconImageCache: imageForIcon: / cachedImageForIcon:
-        GIHook(NSClassFromString(@"SBHIconImageCache"), @selector(imageForIcon:), (IMP)HImageForIcon, &oImageForIcon);
-        GIHook(NSClassFromString(@"SBHIconImageCache"), @selector(cachedImageForIcon:), (IMP)HCachedImageForIcon, &oCachedImageForIcon);
-
-        // SBApplicationIcon: generateIconImageWithInfo:
-        GIHook(NSClassFromString(@"SBApplicationIcon"), @selector(generateIconImageWithInfo:), (IMP)HGenerateIcon, &oGenerateIcon);
-
-        // SBLeafIcon: generateIconImageWithInfo: — home-screen leaf icons
-        // (SnowBoard #87; 0.29 confirmed home-screen apps render via SBLeafIcon)
-        GIHook(NSClassFromString(@"SBLeafIcon"), @selector(generateIconImageWithInfo:), (IMP)HLeafGenerateIcon, &oLeafGenerateIcon);
-
-        // Do not hook layoutSubviews here. Writing UIImageView.image from a
-        // layout callback races SpringBoard's own icon renderer and can cause
-        // repeated layout/re-render cycles or a SpringBoard restart loop.
-        // The cache/provider hooks above are the only replacement path.
+            [fh seekToEndOfFile];
+            [fh writeData:data];
+        } @catch (__unused NSException *e) {
+        }
+        [fh closeFile];
     });
 }
 
-void GIIconEngineReload(void) {
-    gEngineEnabled = GIEngineUserEnabled() && GIEngineHasIcons();
-    GILogMain(@"engine reload enabled=%d", gEngineEnabled);
-    gEngineCache = [NSMutableDictionary dictionary];
-    gEngineMisses = [NSMutableSet set];
-    gEngineIconDirIndex = nil;
-    if (!gEngineIndexLock) gEngineIndexLock = [NSLock new];
-    if (gEngineEnabled) {
-        GIEngineInitIconIndex();
-        GIIconEngineInstallHooks();
+// ------------------------------------------------------------ icon directory -
+
+static NSArray<NSString *> *GIEngineIconDirs(void) {
+    NSMutableArray *dirs = [NSMutableArray arrayWithCapacity:2];
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+    if ([fm fileExistsAtPath:kGIEngineRootHideDir]) {
+        [dirs addObject:kGIEngineRootHideDir];
+    }
+    [dirs addObject:kGIEngineDefaultDir];
+
+    return dirs;
+}
+
+// Bundle id -> absolute path of the theme PNG.
+static NSMutableDictionary<NSString *, NSString *> *gEngineIndex = nil;
+static NSMutableSet<NSString *> *gEngineMisses = nil;
+static NSLock *gEngineIndexLock = nil;
+
+// Strip the scale suffix so "x@3x" and "x@2x" both index as "x".
+static NSString *GIEngineIndexKeyForFilename(NSString *filename) {
+    NSString *base = [filename stringByDeletingPathExtension];   // drop .png
+    if ([base hasSuffix:@"@3x"] || [base hasSuffix:@"@2x"]) {
+        base = [base substringToIndex:base.length - 3];
+    }
+    return base;
+}
+
+// Caller must hold gEngineIndexLock, or be inside the one-time setup.
+static void GIEngineBuildIconIndexLocked(void) {
+    if (!gEngineIndex) gEngineIndex = [NSMutableDictionary dictionary];
+    [gEngineIndex removeAllObjects];
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSUInteger scanned = 0;
+
+    for (NSString *dir in GIEngineIconDirs()) {
+        NSArray<NSString *> *names = [fm contentsOfDirectoryAtPath:dir error:NULL];
+        for (NSString *name in names) {
+            if (![[name pathExtension].lowercaseString isEqualToString:@"png"]) continue;
+
+            NSString *key = GIEngineIndexKeyForFilename(name);
+            if (key.length == 0) continue;
+            if ([key isEqualToString:@"_built"]) continue;      // packaging artefact
+
+            // Directory order decides precedence: the first directory listed wins.
+            if (gEngineIndex[key] != nil) continue;
+
+            gEngineIndex[key] = [dir stringByAppendingPathComponent:name];
+            scanned++;
+        }
+    }
+
+    GILogMain(@"icon index built: %lu entries", (unsigned long)scanned);
+}
+
+// Returns the theme PNG path for a bundle id, or nil.
+static NSString *GIEngineFindIconPath(NSString *bundleID) {
+    if (bundleID.length == 0) return nil;
+
+    if (!gEngineIndexLock) gEngineIndexLock = [[NSLock alloc] init];
+    [gEngineIndexLock lock];
+
+    if (!gEngineIndex || gEngineIndex.count == 0) {
+        GIEngineBuildIconIndexLocked();
+    }
+
+    NSString *path = gEngineIndex[bundleID];
+
+    if (!path) {
+        // Tolerate a trailing "@2x"/"@3x" that slipped into the bundle id.
+        NSString *trimmed = bundleID;
+        if ([trimmed hasSuffix:@"@3x"] || [trimmed hasSuffix:@"@2x"]) {
+            trimmed = [trimmed substringToIndex:trimmed.length - 3];
+            path = gEngineIndex[trimmed];
+        }
+    }
+
+    [gEngineIndexLock unlock];
+    return path;
+}
+
+// ------------------------------------------------------------ bundle id out --
+
+// Best-effort bundle id for an icon object. Tries the concrete accessors first,
+// then falls back to KVC on the private names SpringBoard is known to use.
+static NSString *GIEngineBundleIDForIconObject(id icon) {
+    if (!icon) return nil;
+
+    NSArray<NSString *> *selectors = @[
+        @"applicationBundleID",
+        @"bundleIdentifier",
+        @"iconIdentifier",
+        @"leafIdentifier",
+        @"nodeIdentifier",
+    ];
+
+    for (NSString *selName in selectors) {
+        SEL sel = NSSelectorFromString(selName);
+        if (![icon respondsToSelector:sel]) continue;
+
+        id value = ((id (*)(id, SEL))objc_msgSend)(icon, sel);
+        if ([value isKindOfClass:[NSString class]] && [value length] > 0) {
+            return value;
+        }
+    }
+
+    // SBApplicationIcon wraps an SBApplication; ask it directly.
+    SEL appSel = NSSelectorFromString(@"application");
+    if ([icon respondsToSelector:appSel]) {
+        id app = ((id (*)(id, SEL))objc_msgSend)(icon, appSel);
+        if (app && [app respondsToSelector:@selector(bundleIdentifier)]) {
+            id bid = ((id (*)(id, SEL))objc_msgSend)(app, @selector(bundleIdentifier));
+            if ([bid isKindOfClass:[NSString class]] && [bid length] > 0) {
+                return bid;
+            }
+        }
+    }
+
+    return nil;
+}
+
+// ------------------------------------------------------------- image lookup --
+
+// Master switch from Settings. Read-only here: the tweak owns writing it.
+static int gGIPackEnabledCache = -1;   // -1 = not read yet
+
+static BOOL GIEnginePackEnabled(void) {
+    int cached = __atomic_load_n(&gGIPackEnabledCache, __ATOMIC_RELAXED);
+    if (cached >= 0) return cached == 1;
+
+    CFBooleanRef value = (CFBooleanRef)CFPreferencesCopyAppValue(
+        CFSTR("IconPackEnabled"), CFSTR("com.soren.glassicons"));
+    BOOL enabled = value ? CFBooleanGetValue(value) : YES;
+    if (value) CFRelease(value);
+
+    __atomic_store_n(&gGIPackEnabledCache, enabled ? 1 : 0, __ATOMIC_RELAXED);
+    return enabled;
+}
+
+static NSUInteger gGIMissLogCount = 0;
+
+static UIImage *GIEngineImageForBundleID(NSString *bundleID) {
+    if (!GIEnginePackEnabled()) return nil;
+
+    NSString *path = GIEngineFindIconPath(bundleID);
+    if (!path && bundleID.length && gGIMissLogCount < 120) {
+        gGIMissLogCount++;
+        GILogMain(@"miss %@ (index=%lu)", bundleID, (unsigned long)gEngineIndex.count);
+    }
+    if (!path) return nil;
+
+    UIImage *image = [UIImage imageWithContentsOfFile:path];
+    if (!image) {
+        GILogMain(@"icon unreadable: %@ -> %@", bundleID, path);
+        return nil;
+    }
+    return image;
+}
+
+BOOL GIEngineHasIconForBundleID(NSString *bundleID) {
+    if (!GIEnginePackEnabled()) return NO;
+    return GIEngineFindIconPath(bundleID) != nil;
+}
+
+// Index-only probe: no image decode. Called from the layout path, so it must
+// stay cheap.
+BOOL GIEngineIconHasPackIcon(id icon) {
+    if (!GIEnginePackEnabled()) return NO;
+    return GIEngineHasIconForBundleID(GIEngineBundleIDForIconObject(icon));
+}
+
+// --------------------------------------------------------------- hooking -----
+
+// Install a replacement for `sel` on `cls`. Tries class_addMethod first so the
+// change is scoped to `cls`; falls back to method_setImplementation, which will
+// touch the superclass if `cls` merely inherits the method. `origOut` receives
+// the implementation that was in place before us.
+static void GIHookMethod(Class cls, SEL sel, IMP replacement, IMP *origOut) {
+    if (!cls || !sel || !replacement) return;
+    if (origOut && *origOut) return;   // already installed
+
+    Method existing = class_getInstanceMethod(cls, sel);
+    if (!existing) return;
+
+    IMP previous = method_getImplementation(existing);
+
+    if (class_addMethod(cls, sel, replacement, method_getTypeEncoding(existing))) {
+        if (origOut) *origOut = previous;
+        return;
+    }
+
+    // The class already implements this selector itself.
+    method_setImplementation(existing, replacement);
+    if (origOut) *origOut = previous;
+}
+
+// --- SBHIconImageCache -------------------------------------------------------
+//
+// These are the cache hits SpringBoard serves the home screen and dock from.
+// Each selector gets its own slot so the fallback always calls the method that
+// was actually replaced.
+
+static IMP oCacheImageForIcon = NULL;
+static IMP oCacheCachedImageForIcon = NULL;
+static IMP oCacheUnmaskedImageForIcon = NULL;
+
+static NSUInteger gGIServeLogCount = 0;
+
+static void GIServeLog(NSString *tag, NSString *bid) {
+    if (gGIServeLogCount >= 200) return;
+    gGIServeLogCount++;
+    GILogMain(@"serve[%@] %@", tag, bid);
+}
+
+static NSUInteger gGINoBidLogCount = 0;
+
+static void GINoBundleIDLog(NSString *tag, id icon) {
+    if (gGINoBidLogCount >= 40) return;
+    gGINoBidLogCount++;
+    GILogMain(@"no-bid[%@] class=%@", tag, icon ? NSStringFromClass([icon class]) : @"nil");
+}
+
+static UIImage *GICacheSubstitute(id self, SEL _cmd, id icon, IMP orig, NSString *tag) {
+    NSString *bid = GIEngineBundleIDForIconObject(icon);
+    if (!bid) GINoBundleIDLog(tag, icon);
+    if (bid) {
+        UIImage *themed = GIEngineImageForBundleID(bid);
+        if (themed) { GIServeLog(tag, bid); return themed; }
+    }
+    if (orig) return ((id (*)(id, SEL, id))orig)(self, _cmd, icon);
+    return nil;
+}
+
+static UIImage *HImageForIcon(id self, SEL _cmd, id icon) {
+    return GICacheSubstitute(self, _cmd, icon, oCacheImageForIcon, @"image");
+}
+
+static UIImage *HCachedImageForIcon(id self, SEL _cmd, id icon) {
+    return GICacheSubstitute(self, _cmd, icon, oCacheCachedImageForIcon, @"cached");
+}
+
+static UIImage *HUnmaskedImageForIcon(id self, SEL _cmd, id icon) {
+    return GICacheSubstitute(self, _cmd, icon, oCacheUnmaskedImageForIcon, @"unmasked");
+}
+
+// --- SBLeafIcon / SBApplicationIcon -----------------------------------------
+//
+// generateIconImageWithInfo: takes an SBIconImageInfo struct by value. We do not
+// need to read it, only forward the bytes, so the replacement declares it as a
+// plain argument list and passes the pointer through untouched.
+
+static IMP oLeafGenerateIcon = NULL;
+static IMP oLeafIconImageWithInfo = NULL;
+static IMP oAppGenerateIcon = NULL;
+static IMP oAppIconImageWithInfo = NULL;
+
+typedef id (*GIIconImageInfoIMP)(id, SEL, const void *);
+
+static UIImage *GIIconImageInfoSubstitute(id self, SEL _cmd, const void *info,
+                                          IMP orig, NSString *tag) {
+    NSString *bid = GIEngineBundleIDForIconObject(self);
+    if (bid) {
+        UIImage *themed = GIEngineImageForBundleID(bid);
+        if (themed) { GIServeLog(tag, bid); return themed; }
+    }
+    if (orig) return ((GIIconImageInfoIMP)orig)(self, _cmd, info);
+    return nil;
+}
+
+static UIImage *HLeafGenerateIconImageWithInfo(id self, SEL _cmd, const void *info) {
+    return GIIconImageInfoSubstitute(self, _cmd, info, oLeafGenerateIcon, @"leaf-gen");
+}
+
+static UIImage *HLeafIconImageWithInfo(id self, SEL _cmd, const void *info) {
+    return GIIconImageInfoSubstitute(self, _cmd, info, oLeafIconImageWithInfo, @"leaf-icon");
+}
+
+static UIImage *HAppGenerateIconImageWithInfo(id self, SEL _cmd, const void *info) {
+    return GIIconImageInfoSubstitute(self, _cmd, info, oAppGenerateIcon, @"app-gen");
+}
+
+static UIImage *HAppIconImageWithInfo(id self, SEL _cmd, const void *info) {
+    return GIIconImageInfoSubstitute(self, _cmd, info, oAppIconImageWithInfo, @"app-icon");
+}
+
+// --- installation ------------------------------------------------------------
+
+// Extra 1-arg cache variants: same shape as imageForIcon:.
+static IMP oCacheCachedUnmaskedImageForIcon = NULL;
+static UIImage *HCachedUnmaskedImageForIcon(id self, SEL _cmd, id icon) {
+    return GICacheSubstitute(self, _cmd, icon, oCacheCachedUnmaskedImageForIcon, @"cached-unmasked");
+}
+
+// 2-arg variants take (icon, options).
+static IMP oCacheRealImageOpts = NULL;
+static IMP oCacheUnmaskedImageOpts = NULL;
+
+typedef id (*GI2ArgIMP)(id, SEL, id, id);
+
+static UIImage *H2ArgSubstitute(id self, SEL _cmd, id icon, id options,
+                                IMP orig, NSString *tag) {
+    NSString *bid = GIEngineBundleIDForIconObject(icon);
+    if (bid) {
+        UIImage *themed = GIEngineImageForBundleID(bid);
+        if (themed) { GIServeLog(tag, bid); return themed; }
+    }
+    if (orig) return ((GI2ArgIMP)orig)(self, _cmd, icon, options);
+    return nil;
+}
+
+static UIImage *HRealImageOpts(id self, SEL _cmd, id icon, id options) {
+    return H2ArgSubstitute(self, _cmd, icon, options, oCacheRealImageOpts, @"real-opts");
+}
+
+static UIImage *HUnmaskedImageOpts(id self, SEL _cmd, id icon, id options) {
+    return H2ArgSubstitute(self, _cmd, icon, options, oCacheUnmaskedImageOpts, @"unmasked-opts");
+}
+
+// 3-arg variants take (icon, appearance, options).
+static IMP oCacheImageAppearance = NULL;
+static IMP oCacheCachedImageAppearance = NULL;
+
+typedef id (*GI3ArgIMP)(id, SEL, id, id, id);
+
+static UIImage *H3ArgSubstitute(id self, SEL _cmd, id icon, id appearance, id options,
+                                IMP orig, NSString *tag) {
+    NSString *bid = GIEngineBundleIDForIconObject(icon);
+    if (bid) {
+        UIImage *themed = GIEngineImageForBundleID(bid);
+        if (themed) { GIServeLog(tag, bid); return themed; }
+    }
+    if (orig) return ((GI3ArgIMP)orig)(self, _cmd, icon, appearance, options);
+    return nil;
+}
+
+static UIImage *HImageAppearance(id self, SEL _cmd, id icon, id appearance, id options) {
+    return H3ArgSubstitute(self, _cmd, icon, appearance, options, oCacheImageAppearance, @"image-appear");
+}
+
+static UIImage *HCachedImageAppearance(id self, SEL _cmd, id icon, id appearance, id options) {
+    return H3ArgSubstitute(self, _cmd, icon, appearance, options, oCacheCachedImageAppearance, @"cached-appear");
+}
+
+static void GIIconEngineInstallHooksOnce(void) {
+    Class cache = NSClassFromString(@"SBHIconImageCache");
+    if (cache) {
+        // 1-arg
+        GIHookMethod(cache, @selector(imageForIcon:), (IMP)HImageForIcon, &oCacheImageForIcon);
+        GIHookMethod(cache, @selector(cachedImageForIcon:), (IMP)HCachedImageForIcon, &oCacheCachedImageForIcon);
+        GIHookMethod(cache, @selector(unmaskedImageForIcon:), (IMP)HUnmaskedImageForIcon, &oCacheUnmaskedImageForIcon);
+        GIHookMethod(cache, NSSelectorFromString(@"cachedUnmaskedImageForIcon:"),
+                     (IMP)HCachedUnmaskedImageForIcon, &oCacheCachedUnmaskedImageForIcon);
+
+        // 2-arg
+        GIHookMethod(cache, NSSelectorFromString(@"realImageForIcon:options:"),
+                     (IMP)HRealImageOpts, &oCacheRealImageOpts);
+        GIHookMethod(cache, NSSelectorFromString(@"unmaskedImageForIcon:options:"),
+                     (IMP)HUnmaskedImageOpts, &oCacheUnmaskedImageOpts);
+
+        // 3-arg
+        GIHookMethod(cache, NSSelectorFromString(@"imageForIcon:imageAppearance:options:"),
+                     (IMP)HImageAppearance, &oCacheImageAppearance);
+        GIHookMethod(cache, NSSelectorFromString(@"cachedImageForIcon:imageAppearance:options:"),
+                     (IMP)HCachedImageAppearance, &oCacheCachedImageAppearance);
+
+        NSUInteger installed = 0;
+        if (oCacheImageForIcon) installed++;
+        if (oCacheCachedImageForIcon) installed++;
+        if (oCacheUnmaskedImageForIcon) installed++;
+        if (oCacheCachedUnmaskedImageForIcon) installed++;
+        if (oCacheRealImageOpts) installed++;
+        if (oCacheUnmaskedImageOpts) installed++;
+        if (oCacheImageAppearance) installed++;
+        if (oCacheCachedImageAppearance) installed++;
+        GILogMain(@"SBHIconImageCache hooks: %lu/8", (unsigned long)installed);
+    } else {
+        GILogMain(@"SBHIconImageCache missing");
+    }
+
+    Class app = NSClassFromString(@"SBApplicationIcon");
+    if (app) {
+        GIHookMethod(app, @selector(generateIconImageWithInfo:),
+                     (IMP)HAppGenerateIconImageWithInfo, &oAppGenerateIcon);
+        GIHookMethod(app, @selector(iconImageWithInfo:),
+                     (IMP)HAppIconImageWithInfo, &oAppIconImageWithInfo);
+        GILogMain(@"SBApplicationIcon hooks: gen=%d info=%d",
+                  oAppGenerateIcon != NULL, oAppIconImageWithInfo != NULL);
+    }
+
+    Class leaf = NSClassFromString(@"SBLeafIcon");
+    if (leaf) {
+        GIHookMethod(leaf, @selector(generateIconImageWithInfo:),
+                     (IMP)HLeafGenerateIconImageWithInfo, &oLeafGenerateIcon);
+        GIHookMethod(leaf, @selector(iconImageWithInfo:),
+                     (IMP)HLeafIconImageWithInfo, &oLeafIconImageWithInfo);
+        GILogMain(@"SBLeafIcon hooks: gen=%d info=%d",
+                  oLeafGenerateIcon != NULL, oLeafIconImageWithInfo != NULL);
     }
 }
 
+static void GIIconEngineInstallHooks(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        GIIconEngineInstallHooksOnce();
+    });
+}
+
+// ---------------------------------------------------------------- lifecycle --
+
 void GIIconEngineInstall(void) {
-    gEngineEnabled = GIEngineUserEnabled() && GIEngineHasIcons();
-    GILogMain(@"engine install enabled=%d", gEngineEnabled);
-    if (!gEngineIndexLock) gEngineIndexLock = [NSLock new];
-    if (gEngineEnabled) {
-        gEngineCache = [NSMutableDictionary dictionary];
-        gEngineMisses = [NSMutableSet set];
-        GIEngineInitIconIndex();
-        GIIconEngineInstallHooks();
-    }
+    if (!gEngineIndexLock) gEngineIndexLock = [[NSLock alloc] init];
+    if (!gEngineMisses) gEngineMisses = [NSMutableSet set];
+
+    [gEngineIndexLock lock];
+    GIEngineBuildIconIndexLocked();
+    [gEngineIndexLock unlock];
+
+    GILogMain(@"engine ready: %lu theme icons, pack %@",
+              (unsigned long)gEngineIndex.count,
+              GIEnginePackEnabled() ? @"on" : @"off");
+
+    GIIconEngineInstallHooks();
+}
+
+void GIIconEngineReload(void) {
+    if (!gEngineIndexLock) gEngineIndexLock = [[NSLock alloc] init];
+    if (!gEngineMisses) gEngineMisses = [NSMutableSet set];
+
+    [gEngineIndexLock lock];
+    GIEngineBuildIconIndexLocked();
+    [gEngineIndexLock unlock];
+
+    gGIMissLogCount = 0;
+    __atomic_store_n(&gGIPackEnabledCache, -1, __ATOMIC_RELAXED);
+    GILogMain(@"engine reloaded: %lu theme icons, pack %@",
+              (unsigned long)gEngineIndex.count,
+              GIEnginePackEnabled() ? @"on" : @"off");
+
+    GIIconEngineInstallHooks();
 }
