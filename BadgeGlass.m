@@ -74,6 +74,18 @@ static void GIBadgeSuppressRedPlate(UIView *view) {
     view.backgroundColor = UIColor.clearColor;
     view.layer.backgroundColor = UIColor.clearColor.CGColor;
 
+    // The system red plate may be baked into layer.contents (CGImage).
+    // Clear it so the badge shows only our glass overlay.
+    if (view.layer.contents) {
+        view.layer.contents = nil;
+    }
+    // Also clear contents of any cached sublayers.
+    for (CALayer *sub in view.layer.sublayers) {
+        if (sub && sub.contents) {
+            sub.contents = nil;
+        }
+    }
+
     for (UIView *sub in view.subviews) {
         NSString *name = NSStringFromClass([sub class]);
         BOOL isText = [sub isKindOfClass:UILabel.class] ||

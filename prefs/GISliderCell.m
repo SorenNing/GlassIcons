@@ -91,13 +91,12 @@ static double GICellNumber(id value, double fallback) {
         CGFloat left = 16.0, right = 16.0, valueWidth = 96.0;
         _slider.frame = CGRectMake(left, midY - 15.5, width - left - valueWidth - right - 8.0, 31.0);
         _valueLabel.frame = CGRectMake(width - valueWidth - right, midY - 10.0, valueWidth, 20.0);
-        [self glassSyncValue];
     } @catch (__unused NSException *e) {}
 }
 
 - (void)prepareForReuse {
     [super prepareForReuse];
-    _valueLabel.text = nil;
+    [self glassSyncValue];
 }
 
 - (void)refreshCellContentsWithSpecifier:(PSSpecifier *)specifier {
@@ -108,6 +107,12 @@ static double GICellNumber(id value, double fallback) {
 - (void)glassValueChanged:(UISlider *)slider {
     _valueLabel.text = [NSString stringWithFormat:@"%.2f", slider.value];
     [self glassWritePreference:slider.value];
+}
+
+- (void)setSelected:(BOOL)selected animated:(BOOL)animated {
+    [super setSelected:selected animated:animated];
+    // Reset slider highlight when cell is selected/deselected
+    _slider.highlighted = NO;
 }
 
 @end

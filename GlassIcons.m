@@ -1,37 +1,27 @@
 #import <UIKit/UIKit.h>
+#import <CoreFoundation/CoreFoundation.h>
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
-#import <CoreFoundation/CoreFoundation.h>
-#import <dispatch/dispatch.h>
-#import <CoreGraphics/CoreGraphics.h>
-#import <math.h>
+#import <objc/message.h>
+
+// Icon engine (GIIconEngine.m)
+void GIIconEngineInstall(void);
+void GIIconEngineReload(void);
+BOOL GIEngineIconHasPackIcon(id icon);
+
+// ============================================================
+// GlassIcons.m — glass overlay on SpringBoard icon surfaces
+// ============================================================
 
 static const void *kGlassOverlayKey = &kGlassOverlayKey;
-static const void *kGlassImageKey = &kGlassImageKey;
-static const void *kGlassFactorKey = &kGlassFactorKey;
-static const void *kGlassSkipIconKey = &kGlassSkipIconKey;
-static const void *kGlassSkipFlagKey = &kGlassSkipFlagKey;
 static const void *kGlassSignatureKey = &kGlassSignatureKey;
+static const void *kPackIconSkipKey = &kPackIconSkipKey;
 
-static CFStringRef const kGlassDomain = CFSTR("com.soren.glassicons");
+static NSHashTable *gTrackedViews = nil;
 
-static IMP gOriginalLayoutSubviews = NULL;
-static BOOL gEnabled = YES;
-static CGFloat gIntensity = 0.90;
-static CGFloat gRimWeight = 0.75;
-static CGFloat gSheenWeight = 0.70;
-static BOOL gHookInstalled = NO;
-static BOOL gInstalling = NO;
-static BOOL gDisabled = NO;
-static NSUInteger gInstallAttempts = 0;
-static CFTimeInterval gLastPrefsRead = 0.0;
-static NSMutableDictionary<NSString *, UIImage *> *gTileCache = nil;
-static NSHashTable<UIView *> *gTrackedViews = nil;
-static BOOL gIconPackEnabled = NO;
-static NSMutableDictionary<NSString *, UIImage *> *gIconPackCache = nil;
-static const void *kIconPackLayerKey = &kIconPackLayerKey;
-static const void *kIconPackSignatureKey = &kIconPackSignatureKey;
-static NSString * const kIconPackDir = @"/var/mobile/Library/GlassIcons/Icons";
+// ============================================================
+// Logging
+// ============================================================
 
 void GILogMain(NSString *format, ...) {
     va_list args;
@@ -52,811 +42,311 @@ void GILogMain(NSString *format, ...) {
     } @catch (__unused NSException *e) {}
 }
 
-static BOOL GIIsDisabled(void) { return gDisabled; }
+// ============================================================
+// Preferences
+// ============================================================
 
-static void GIReadDisabledState(void) {
-    NSFileManager *fm = [NSFileManager defaultManager];
-    gDisabled = [fm fileExistsAtPath:@"/var/mobile/Library/local.glassicons.disabled"] ||
-                [fm fileExistsAtPath:@"/var/mobile/Library/Preferences/com.soren.glassicons.disabled"];
-}
-
-static CGFloat GIClampedDouble(CFStringRef key, CGFloat fallback, CGFloat ceiling) {
-    CFPropertyListRef value = CFPreferencesCopyAppValue(key, kGlassDomain);
-    CGFloat result = fallback;
-    if (value) {
-        if (CFGetTypeID(value) == CFNumberGetTypeID()) {
-            double number = fallback;
-            CFNumberGetValue((CFNumberRef)value, kCFNumberDoubleType, &number);
-            result = (CGFloat)fmax(0.0, fmin(ceiling, number));
-        }
-        CFRelease(value);
-    }
-    return result;
-}
+static BOOL gEnabled = YES;
+static CGFloat gIntensity = 0.35;
+static CGFloat gRim = 0.50;
+static CGFloat gSheen = 0.30;
+static BOOL gBadgeGlass = YES;
+static CFAbsoluteTime gLastPrefsLoad = 0;
 
 static void GIReadPreferences(void) {
-    CFPropertyListRef enabled = CFPreferencesCopyAppValue(CFSTR("Enabled"), kGlassDomain);
-    if (enabled) {
-        gEnabled = CFGetTypeID(enabled) == CFBooleanGetTypeID() ? CFBooleanGetValue((CFBooleanRef)enabled) : YES;
-        CFRelease(enabled);
+    CFPropertyListRef ref = CFPreferencesCopyAppValue(CFSTR("GlassIconEnabled"), CFSTR("com.soren.glassicons"));
+    if (ref) {
+        gEnabled = CFGetTypeID(ref) == CFBooleanGetTypeID() ? CFBooleanGetValue((CFBooleanRef)ref) : YES;
+        CFRelease(ref);
     }
-    gIntensity = GIClampedDouble(CFSTR("Intensity"), 0.90, 5.0);
-    gRimWeight = GIClampedDouble(CFSTR("Rim"), 0.75, 1.0);
-    gSheenWeight = GIClampedDouble(CFSTR("Sheen"), 0.70, 1.0);
+    ref = CFPreferencesCopyAppValue(CFSTR("GlassIconIntensity"), CFSTR("com.soren.glassicons"));
+    if (ref) {
+        gIntensity = [(__bridge NSNumber *)ref floatValue];
+        CFRelease(ref);
+    }
+    ref = CFPreferencesCopyAppValue(CFSTR("GlassIconRim"), CFSTR("com.soren.glassicons"));
+    if (ref) {
+        gRim = [(__bridge NSNumber *)ref floatValue];
+        CFRelease(ref);
+    }
+    ref = CFPreferencesCopyAppValue(CFSTR("GlassIconSheen"), CFSTR("com.soren.glassicons"));
+    if (ref) {
+        gSheen = [(__bridge NSNumber *)ref floatValue];
+        CFRelease(ref);
+    }
+    ref = CFPreferencesCopyAppValue(CFSTR("BadgeGlass"), CFSTR("com.soren.glassicons"));
+    if (ref) {
+        gBadgeGlass = CFGetTypeID(ref) == CFBooleanGetTypeID() ? CFBooleanGetValue((CFBooleanRef)ref) : YES;
+        CFRelease(ref);
+    }
 }
 
-// Cheap, throttled refresh so slider changes show up without a respring.
 static void GIReloadPreferencesIfNeeded(void) {
-    CFTimeInterval now = CACurrentMediaTime();
-    if (now - gLastPrefsRead < 2.5) return;
-    gLastPrefsRead = now;
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    if (now - gLastPrefsLoad < 2.5) return;
+    gLastPrefsLoad = now;
     GIReadPreferences();
 }
 
-// Final behavior (user's decision after 0.8.x–1.1.0 iterations): folders are
-// excluded entirely. Only FolderIcon class check — never superview traversal
-// (SBFolder prefix matching kills the whole home screen, see 0.9.0).
-static BOOL GIShouldSkipView(UIView *view) {
-    if (!view) return YES;
-    CGFloat side = MIN(CGRectGetWidth(view.bounds), CGRectGetHeight(view.bounds));
-    if (side < 40.0) return YES;
+// ============================================================
+// Helpers
+// ============================================================
 
+static BOOL GIShouldSkipView(UIView *view) {
+    if (![view isKindOfClass:[UIView class]]) return YES;
+    NSString *name = NSStringFromClass([view class]);
+    if ([name containsString:@"Folder"]) return YES;
+    if ([name containsString:@"SBIconImageCrossfadeView"]) return YES;
+    // Cache the pack-icon skip result to avoid repeated KVC + file-system checks
+    NSNumber *cachedSkip = objc_getAssociatedObject(view, kPackIconSkipKey);
+    if (cachedSkip) return [cachedSkip boolValue];
+    BOOL shouldSkip = NO;
     @try {
         id icon = [view valueForKey:@"icon"];
-        if (icon && [NSStringFromClass([icon class]) rangeOfString:@"FolderIcon"].location != NSNotFound) {
-            return YES;
+        if (icon) {
+            NSString *iconName = NSStringFromClass([icon class]);
+            if ([iconName containsString:@"Folder"]) shouldSkip = YES;
+            // If this icon has a custom icon-pack replacement, skip glass overlay
+            // (user requirement: custom icons should NOT have glass on top)
+            if (!shouldSkip && GIEngineIconHasPackIcon(icon)) shouldSkip = YES;
         }
     } @catch (__unused NSException *e) {}
-
-    return NO;
+    objc_setAssociatedObject(view, kPackIconSkipKey, [NSNumber numberWithBool:shouldSkip], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return shouldSkip;
 }
 
-static CGImageRef GIFindIconImage(UIView *view) {
-    id contents = view.layer.contents;
-    if (contents && CFGetTypeID((__bridge CFTypeRef)contents) == CGImageGetTypeID()) {
-        return (__bridge CGImageRef)contents;
+static CGFloat GIStrengthForView(UIImage *image, UIView *view) {
+    CGFloat factor = 1.0;
+    CGSize viewSize = view.bounds.size;
+    CGFloat minSide = MIN(viewSize.width, viewSize.height);
+    (void)minSide;
+    if (image) {
+        CGFloat imgMinSide = MIN(image.size.width, image.size.height);
+        factor = imgMinSide / 180.0;
+        if (factor < 0.5) factor = 0.5;
+        if (factor > 1.5) factor = 1.5;
     }
-    for (CALayer *sublayer in view.layer.sublayers) {
-        id sub = sublayer.contents;
-        if (sub && CFGetTypeID((__bridge CFTypeRef)sub) == CGImageGetTypeID()) {
-            return (__bridge CGImageRef)sub;
+    CGFloat strength = gIntensity * factor;
+    if (strength > 0.6) strength = 0.6;
+    if (strength < 0) strength = 0;
+    return strength;
+}
+
+static UIImage *GITileImage(UIImage *image, CGSize targetSize, CGFloat cornerRadius) __attribute__((unused));
+static UIImage *GITileImage(UIImage *image, CGSize targetSize, CGFloat cornerRadius) {
+    (void)cornerRadius;
+    UIGraphicsBeginImageContextWithOptions(targetSize, NO, 0);
+    CGContextRef ctx = UIGraphicsGetCurrentContext();
+    (void)ctx;
+    CGFloat scale = targetSize.width / image.size.width;
+    CGRect drawRect = (CGRect){{0, 0}, {image.size.width * scale, image.size.height * scale}};
+    [image drawInRect:drawRect];
+    UIImage *result = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    return result;
+}
+
+// ============================================================
+// Glass overlay
+// ============================================================
+
+static void GIUpdateOverlay(UIView *view) {
+    if (!view) return;
+    if (!gEnabled) {
+        CALayer *existing = objc_getAssociatedObject(view, kGlassOverlayKey);
+        if (existing) {
+            [existing removeFromSuperlayer];
+            objc_setAssociatedObject(view, kGlassOverlayKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
+        return;
     }
-    return NULL;
-}
+    if (GIShouldSkipView(view)) return;
 
-static CGFloat GIAverageLuminance(CGImageRef image) {
-    unsigned char pixel[4] = {0, 0, 0, 0};
-    CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
-    if (!space) return 0.5;
-    CGContextRef ctx = CGBitmapContextCreate(pixel, 1, 1, 8, 4, space, kCGImageAlphaPremultipliedLast);
-    CGColorSpaceRelease(space);
-    if (!ctx) return 0.5;
-    CGContextSetInterpolationQuality(ctx, kCGInterpolationLow);
-    CGContextDrawImage(ctx, CGRectMake(0, 0, 1, 1), image);
-    CGContextRelease(ctx);
-    CGFloat lum = (0.2126 * pixel[0] + 0.7152 * pixel[1] + 0.0722 * pixel[2]) / 255.0;
-    return fmax(0.0, fmin(1.0, lum));
-}
-
-// 1.0 = bright icon (full effect), 0.30 = near-black icon (subdued effect).
-static CGFloat GIStrengthForView(UIView *view) {
-    CGImageRef image = GIFindIconImage(view);
-    NSValue *cachedPointer = objc_getAssociatedObject(view, kGlassImageKey);
-    NSNumber *cachedFactor = objc_getAssociatedObject(view, kGlassFactorKey);
-    if (cachedPointer && cachedFactor && cachedPointer.pointerValue == (void *)image) {
-        return (CGFloat)cachedFactor.doubleValue;
-    }
-    CGFloat luminance = image ? GIAverageLuminance(image) : 0.5;
-    CGFloat factor = fmax(0.30, fmin(1.0, 0.30 + 0.70 * luminance));
-    objc_setAssociatedObject(view, kGlassImageKey, [NSValue valueWithPointer:(void *)image], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(view, kGlassFactorKey, @(factor), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    return factor;
-}
-
-static NSString *GISettingsSignature(CGFloat factor) {
-    NSInteger factorBucket = (NSInteger)lroundf((float)(factor * 10.0));
-    NSInteger intensityBucket = (NSInteger)lroundf((float)(gIntensity * 20.0));
-    NSInteger rimBucket = (NSInteger)lroundf((float)(gRimWeight * 20.0));
-    NSInteger sheenBucket = (NSInteger)lroundf((float)(gSheenWeight * 20.0));
-    return [NSString stringWithFormat:@"%ld.%ld.%ld.%ld", (long)factorBucket, (long)intensityBucket,
-                                      (long)rimBucket, (long)sheenBucket];
-}
-
-static UIImage *GITileImage(CGSize size, CGFloat scale, CGFloat factor, CGFloat intensity, NSString *signature) {
-    if (!gTileCache) gTileCache = [NSMutableDictionary dictionary];
-    NSString *key = [NSString stringWithFormat:@"%@|%.1fx%.1f@%.0f|%d", signature, size.width, size.height, scale, (int)lroundf(intensity * 20.0)];
-    UIImage *cached = gTileCache[key];
-    if (cached) return cached;
-    if (gTileCache.count > 48) [gTileCache removeAllObjects];
-
-    CGFloat darkScale = 0.30 + 0.70 * factor;
-    // Light icons need much less white-on-white; keep dark icons vivid.
-    CGFloat lightDamp = factor > 0.8 ? 0.55 : 1.0;
-    CGFloat sheenTop = 0.40 * gSheenWeight * darkScale * intensity * lightDamp;
-    CGFloat sheenMid = 0.10 * gSheenWeight * darkScale * intensity * lightDamp;
-    CGFloat sheenBottom = 0.06 * gSheenWeight * darkScale * intensity * lightDamp;
-    // Rim is symmetric now: full ring visible top and bottom.
-    CGFloat rimTop = 0.85 * gRimWeight * darkScale * intensity;
-    CGFloat rimMid = 0.70 * gRimWeight * darkScale * intensity;
-    CGFloat rimBottom = 0.85 * gRimWeight * darkScale * intensity;
+    GIReloadPreferencesIfNeeded();
 
     UIImage *image = nil;
+    for (NSString *key in @[@"image"]) {
+        @try {
+            id val = [view valueForKey:key];
+            if ([val isKindOfClass:[UIImage class]]) { image = val; break; }
+        } @catch (__unused NSException *e) {}
+    }
+    if (!image) {
+        for (UIView *sub in view.subviews) {
+            if ([sub isKindOfClass:[UIImageView class]]) {
+                UIImageView *iv = (UIImageView *)sub;
+                if (iv.image) { image = iv.image; break; }
+            }
+        }
+    }
+
+    CGFloat strength = GIStrengthForView(image, view);
+    NSString *signature = [NSString stringWithFormat:@"%.0fx%.0f|%.2f|%.0fx%.0f",
+                           view.bounds.size.width, view.bounds.size.height,
+                           strength, (image ? image.size.width : 0), (image ? image.size.height : 0)];
+
+    CALayer *overlay = objc_getAssociatedObject(view, kGlassOverlayKey);
+    NSString *oldSig = (NSString *)objc_getAssociatedObject(view, kGlassSignatureKey);
+    if (overlay && [oldSig isEqualToString:signature]) return;
+
+    if (overlay) [overlay removeFromSuperlayer];
+
+    overlay = [CALayer layer];
+    overlay.frame = view.bounds;
+    overlay.cornerRadius = MIN(view.bounds.size.width, view.bounds.size.height) * 0.225;
+    overlay.masksToBounds = YES;
+
+    CALayer *rim = [CALayer layer];
+    rim.frame = overlay.bounds;
+    rim.cornerRadius = overlay.cornerRadius;
+    rim.borderWidth = MAX(0.6, MIN(1.0, MIN(view.bounds.size.width, view.bounds.size.height) * 0.030));
+    rim.borderColor = [UIColor colorWithRed:1 green:1 blue:1 alpha:gRim * strength].CGColor;
+    [overlay addSublayer:rim];
+
+    [view.layer addSublayer:overlay];
+    objc_setAssociatedObject(view, kGlassOverlayKey, overlay, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(view, kGlassSignatureKey, signature, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    if (!gTrackedViews) gTrackedViews = [NSHashTable hashTableWithOptions:NSHashTableWeakMemory];
+    [gTrackedViews addObject:view];
+}
+
+// ============================================================
+// Hook: SBIconImageView layoutSubviews
+// ============================================================
+
+static IMP gOrigLayoutSubviews = NULL;
+
+static void GIHookedLayoutSubviews(id self, SEL _cmd) {
+    if (gOrigLayoutSubviews) {
+        ((void (*)(id, SEL))gOrigLayoutSubviews)(self, _cmd);
+    }
     @try {
-        UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
-        format.scale = scale;
-        format.opaque = NO;
-        UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:size format:format];
-        image = [renderer imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
-            CGContextRef c = ctx.CGContext;
-            CGRect rect = CGRectMake(0, 0, size.width, size.height);
-            CGFloat radius = MIN(size.width, size.height) * 0.225;
-            UIBezierPath *shape = [UIBezierPath bezierPathWithRoundedRect:rect cornerRadius:radius];
-
-            CGContextSaveGState(c);
-            [shape addClip];
-            CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
-            CGFloat comps[] = {1.0, 1.0, 1.0, sheenTop,
-                               1.0, 1.0, 1.0, sheenMid,
-                               0.62, 0.88, 1.0, sheenBottom};
-            CGFloat locs[] = {0.0, 0.28, 1.0};
-            CGGradientRef grad = CGGradientCreateWithColorComponents(space, comps, locs, 3);
-            CGContextDrawLinearGradient(c, grad, CGPointMake(0.0, 0.0), CGPointMake(0.0, size.height), 0);
-            CGGradientRelease(grad);
-            CGColorSpaceRelease(space);
-            CGContextRestoreGState(c);
-
-            CGFloat lineWidth = MAX(0.9, MIN(1.6, size.width * 0.0095));
-            CGRect strokeRect = CGRectInset(rect, lineWidth * 0.5, lineWidth * 0.5);
-            UIBezierPath *stroke = [UIBezierPath bezierPathWithRoundedRect:strokeRect
-                                                                  cornerRadius:MAX(0.0, radius - lineWidth * 0.5)];
-
-            CGContextSaveGState(c);
-            CGContextAddPath(c, stroke.CGPath);
-            CGContextSetLineWidth(c, lineWidth);
-            CGContextReplacePathWithStrokedPath(c);
-            CGContextClip(c);
-            CGColorSpaceRef space2 = CGColorSpaceCreateDeviceRGB();
-            CGFloat comps2[] = {1.0, 1.0, 1.0, rimTop,
-                                1.0, 1.0, 1.0, rimMid,
-                                1.0, 1.0, 1.0, rimBottom};
-            CGFloat locs2[] = {0.0, 0.5, 1.0};
-            CGGradientRef grad2 = CGGradientCreateWithColorComponents(space2, comps2, locs2, 3);
-            CGContextDrawLinearGradient(c, grad2, CGPointMake(0.0, 0.0), CGPointMake(0.0, size.height), 0);
-            CGGradientRelease(grad2);
-            CGColorSpaceRelease(space2);
-            CGContextRestoreGState(c);
-        }];
-    } @catch (__unused NSException *e) {
-        image = nil;
-    }
-    if (!image) return nil;
-    gTileCache[key] = image;
-    return image;
+        GIUpdateOverlay(self);
+    } @catch (__unused NSException *e) {}
 }
 
-
-#pragma mark - Icon pack
-
-// Bundle id of the icon rendered by this image view (best effort across versions).
-
-static void GIIconPackEnsureDirectory(void) {
-    NSFileManager *fm = [NSFileManager defaultManager];
-    if ([fm fileExistsAtPath:kIconPackDir]) return;
-    [fm createDirectoryAtPath:kIconPackDir withIntermediateDirectories:YES attributes:nil error:NULL];
-    NSString *readme = [kIconPackDir stringByAppendingPathComponent:@"README.txt"];
-    if (![fm fileExistsAtPath:readme]) {
-        NSString *text = @"把 PNG 图标放在这个目录里，文件名用 App 的 Bundle ID，例如\n"
-                          "  com.tencent.xin.png          微信\n"
-                          "  com.alipay.iphoneclient.png  支付宝\n"
-                          "支持 @2x / @3x 后缀（优先 @3x > @2x > png）。\n"
-                          "放好后到 设置 → GlassIcons → 桌面图标包 → 重新加载图标包。\n";
-        [text writeToFile:readme atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+static void GIHookInstall(void) {
+    Class cls = NSClassFromString(@"SBIconImageView");
+    if (!cls) {
+        GILogMain(@"hook: class missing SBIconImageView");
+        return;
+    }
+    Method method = class_getInstanceMethod(cls, @selector(layoutSubviews));
+    if (!method) {
+        GILogMain(@"hook: SBIconImageView has no layoutSubviews");
+        return;
+    }
+    gOrigLayoutSubviews = method_getImplementation(method);
+    // class_addMethod adds to cls's own method list, shadowing inherited
+    // implementations — safe for all views. Falls back to
+    // method_setImplementation only if the selector already exists in
+    // cls's own method list.
+    const char *types = method_getTypeEncoding(method);
+    if (class_addMethod(cls, @selector(layoutSubviews), (IMP)GIHookedLayoutSubviews, types)) {
+        GILogMain(@"hook ok: SBIconImageView layoutSubviews (class_addMethod)");
+    } else {
+        method_setImplementation(method, (IMP)GIHookedLayoutSubviews);
+        GILogMain(@"hook ok: SBIconImageView layoutSubviews (method_setImplementation)");
     }
 }
 
-static NSObject *GIIconPackCacheLock(void) {
-    static NSObject *lock;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{ lock = [NSObject new]; });
-    return lock;
-}
+// ============================================================
+// Window scan
+// ============================================================
 
-static void GIIconPackClearCache(void) {
-    @synchronized (GIIconPackCacheLock()) {
-        [gIconPackCache removeAllObjects];
-    }
-}
-
-static UIImage *GIIconPackImageForBundleID(NSString *bundleID) {
-    if (!bundleID.length) return nil;
-
-    @synchronized (GIIconPackCacheLock()) {
-        if (!gIconPackCache) {
-            gIconPackCache = [NSMutableDictionary dictionary];
-            GIIconPackEnsureDirectory();
-        }
-
-        UIImage *cached = gIconPackCache[bundleID];
-        if (cached) return (cached == (id)NSNull.null) ? nil : cached;
-
-        NSFileManager *fm = [NSFileManager defaultManager];
-        UIImage *image = nil;
-        NSString *usedPath = nil;
-        for (NSString *suffix in @[@"@3x.png", @"@2x.png", @".png"]) {
-            NSString *path = [kIconPackDir stringByAppendingPathComponent:
-                              [bundleID stringByAppendingString:suffix]];
-            if ([fm fileExistsAtPath:path]) {
-                image = [UIImage imageWithContentsOfFile:path];
-                if (image) { usedPath = path; break; }
-            }
-        }
-        if (usedPath) {
-            static NSMutableSet<NSString *> *loggedPaths;
-            if (!loggedPaths) loggedPaths = [NSMutableSet set];
-            if (![loggedPaths containsObject:bundleID]) {
-                [loggedPaths addObject:bundleID];
-                GILogMain(@"iconpack file %@ -> %@", bundleID, usedPath.lastPathComponent);
-            }
-        }
-        gIconPackCache[bundleID] = image ?: (id)NSNull.null;
-        return image;
-    }
-}
-
-static void GIUpdateOverlay(UIView *view);
-static void GIInstallCacheHooks(void);
-static void GIInstallSnowBoardProviders(void);
-extern void GIIconEngineInstall(void);
-extern void GIIconEngineReload(void);
-
-#pragma mark - Whole-tree scan
-
-// Icons only reach us through -layoutSubviews, and a settled home screen does
-// not lay out again — so most icons never get processed. Walk the window tree
-// and apply to every icon image view we can find.
-static void GIWalkForIcons(UIView *view, int depth, NSUInteger *touched) {
+static void GIWalkForIcons(UIView *view, int depth) {
     if (!view || depth > 30) return;
     NSString *name = NSStringFromClass([view class]);
-    if ([name containsString:@"SBIconImageView"] || [name hasPrefix:@"SBIconImage"]) {
+    if ([name hasPrefix:@"SBIconImageView"] || [name hasPrefix:@"SBIconImage"]) {
         @try { GIUpdateOverlay(view); } @catch (__unused NSException *e) {}
-        if (touched) (*touched)++;
     }
-    for (UIView *child in view.subviews) {
-        GIWalkForIcons(child, depth + 1, touched);
+    for (UIView *sub in view.subviews) {
+        GIWalkForIcons(sub, depth + 1);
     }
 }
 
 static void GIScanAllIcons(void) {
-    static CFTimeInterval lastScan = 0.0;
-    CFTimeInterval now = CACurrentMediaTime();
-    if (now - lastScan < 0.4) return;
-    lastScan = now;
-
     dispatch_async(dispatch_get_main_queue(), ^{
-        NSUInteger touched = 0;
+        UIApplication *app = [UIApplication sharedApplication];
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-        for (UIWindow *window in UIApplication.sharedApplication.windows) {
-            GIWalkForIcons(window, 0, &touched);
+        for (UIWindow *window in app.windows) {
+            (void)window;
+            GIWalkForIcons(window, 0);
         }
 #pragma clang diagnostic pop
-        GILogMain(@"scan: visited %lu icon views", (unsigned long)touched);
     });
-}
-
-static void GIIconPackReload(void) {
+    GIReadPreferences();
     dispatch_async(dispatch_get_main_queue(), ^{
-        GIIconPackEnsureDirectory();
-        NSUInteger count = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:kIconPackDir error:NULL].count;
-        CFPropertyListRef enabledRef = CFPreferencesCopyAppValue(CFSTR("IconPackEnabled"), kGlassDomain);
-        BOOL userEnabled = enabledRef ? (CFGetTypeID(enabledRef) == CFBooleanGetTypeID()
-                                          ? CFBooleanGetValue((CFBooleanRef)enabledRef) : YES) : YES;
-        if (enabledRef) CFRelease(enabledRef);
-        gIconPackEnabled = userEnabled && count > 0;
-        GIIconEngineReload();
-        GIIconPackClearCache();
         for (UIView *view in [gTrackedViews allObjects]) {
-            objc_setAssociatedObject(view, kIconPackSignatureKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            @try { GIUpdateOverlay(view); } @catch (__unused NSException *e) {}
+            if (view) {
+                objc_setAssociatedObject(view, kGlassOverlayKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                objc_setAssociatedObject(view, kGlassSignatureKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                // Clear stale pack-icon skip cache so new icons are picked up after reload
+                objc_setAssociatedObject(view, kPackIconSkipKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                @try { GIUpdateOverlay(view); } @catch (__unused NSException *e) {}
+            }
         }
-        GIScanAllIcons();
     });
 }
 
-// Returns YES when a custom icon was applied (glass is skipped in that case).
+// ============================================================
+// Preferences change notification
+// ============================================================
 
-static void GIUpdateOverlay(UIView *view) {
-    if (!view || !view.layer || CGRectIsEmpty(view.bounds)) return;
-
-    GIReloadPreferencesIfNeeded();
-
-    CALayer *overlay = objc_getAssociatedObject(view, kGlassOverlayKey);
-    if (!gEnabled || GIIsDisabled() || GIShouldSkipView(view)) {
-        if (overlay) {
-            [overlay removeFromSuperlayer];
-            objc_setAssociatedObject(view, kGlassOverlayKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            objc_setAssociatedObject(view, kGlassSignatureKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        }
-        return;
-    }
-
-    CGRect bounds = view.bounds;
-
-    if (gIntensity <= 0.001) {
-        if (overlay) {
-            [overlay removeFromSuperlayer];
-            objc_setAssociatedObject(view, kGlassOverlayKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        }
-        return;
-    }
-
-    CGFloat factor = GIStrengthForView(view);
-    CGFloat intensity = gIntensity;
-    NSString *signature = GISettingsSignature(factor);
-    NSString *lastSignature = objc_getAssociatedObject(view, kGlassSignatureKey);
-
-    if (overlay &&
-        CGRectEqualToRect(overlay.frame, bounds) &&
-        [lastSignature isEqualToString:signature]) {
-        return;  // nothing changed: no layout work at all
-    }
-
-    CGFloat scale = view.window ? view.window.screen.scale : UIScreen.mainScreen.scale;
-    if (scale <= 0.0) scale = UIScreen.mainScreen.scale;
-    UIImage *tile = GITileImage(bounds.size, scale, factor, intensity, signature);
-    if (!tile) return;
-
-    if (!overlay) {
-        overlay = [CALayer layer];
-        overlay.name = @"com.soren.glassicons.overlay";
-        overlay.masksToBounds = NO;
-        overlay.contentsGravity = kCAGravityResize;
-        objc_setAssociatedObject(view, kGlassOverlayKey, overlay, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        [view.layer addSublayer:overlay];
-        if (!gTrackedViews) gTrackedViews = [NSHashTable weakObjectsHashTable];
-        [gTrackedViews addObject:view];
-    }
-
-    [CATransaction begin];
-    [CATransaction setDisableActions:YES];
-    overlay.contents = (__bridge id)tile.CGImage;
-    overlay.contentsScale = scale;
-    overlay.frame = bounds;
-    overlay.hidden = NO;
-    [CATransaction commit];
-
-    objc_setAssociatedObject(view, kGlassSignatureKey, signature, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+static void GIPreferencesChanged(CFNotificationCenterRef center, void *observer,
+                                  CFStringRef name, void *object,
+                                  CFDictionaryRef info) {
+    (void)center; (void)observer; (void)object; (void)info;
+    NSString *nameStr = (__bridge NSString *)name;
+    BOOL isIconPack = [nameStr isEqualToString:@"com.soren.glassicons.iconpack"];
+    BOOL isChanged = [nameStr isEqualToString:@"com.soren.glassicons.changed"];
+    if (!isIconPack && !isChanged) return;
+    if (isIconPack) GIIconEngineReload();
+    GIReadPreferences();
+    GIScanAllIcons();
 }
 
-// SnowBoard-style: after the system lays out the icon view, place the themed
-// image directly on the image view (what its cropper output would do).
-static void __attribute__((unused)) GISnowBoardApplyImage(UIView *iconView) {
-    if (!gIconPackEnabled) return;
+// ============================================================
+// Init
+// ============================================================
 
-    NSString *bundleID = nil;
-    id icon = nil;
-    @try { icon = [iconView valueForKey:@"icon"]; } @catch (__unused NSException *e) { icon = nil; }
-    if (icon) {
-        for (NSString *key in @[@"applicationBundleID", @"bundleIdentifier"]) {
-            id value = nil;
-            @try { value = [icon valueForKey:key]; } @catch (__unused NSException *e) { value = nil; }
-            if ([value isKindOfClass:NSString.class] && [(NSString *)value length]) {
-                bundleID = (NSString *)value;
-                break;
-            }
-        }
-    }
-    UIImage *themed = bundleID ? GIIconPackImageForBundleID(bundleID) : nil;
-    if (!themed) return;
-
-    // Find the image-bearing subview (UIImageView or layer.contents).
-    __block UIImageView *target = nil;
-    if ([iconView isKindOfClass:UIImageView.class]) {
-        target = (UIImageView *)iconView;
-    }
-    if (!target) {
-        for (UIView *sub in iconView.subviews) {
-            if ([sub isKindOfClass:UIImageView.class]) { target = (UIImageView *)sub; break; }
-        }
-    }
-    if (!target) return;
-
-    static NSMutableSet<NSString *> *appliedIDs;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ appliedIDs = [NSMutableSet set]; });
-
-    CGFloat side = MIN(CGRectGetWidth(iconView.bounds), CGRectGetHeight(iconView.bounds));
-    NSString *signature = [NSString stringWithFormat:@"%@|%.0f", bundleID, side];
-    if ([objc_getAssociatedObject(iconView, "gi.pack.applied") isEqualToString:signature]) return;
-    objc_setAssociatedObject(iconView, "gi.pack.applied", signature, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-
-    CGFloat scale = target.window ? target.window.screen.scale : UIScreen.mainScreen.scale;
-    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
-    format.scale = scale;
-    format.opaque = NO;
-    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(side, side) format:format];
-    UIImage *scaled = [renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *ctx) {
-        [themed drawInRect:CGRectMake(0, 0, side, side)];
-    }];
-
-    target.image = scaled;
-    target.contentMode = UIViewContentModeScaleAspectFill;
-    target.clipsToBounds = YES;
-    target.layer.cornerRadius = side * 0.225;
-    target.layer.masksToBounds = YES;
-
-    if (![appliedIDs containsObject:bundleID]) {
-        [appliedIDs addObject:bundleID];
-        GILogMain(@"snowboard-style image set: %@", bundleID);
-    }
-}
-
-static void GIHookedLayoutSubviews(UIView *self, SEL _cmd) {
-    if (gOriginalLayoutSubviews) ((void (*)(id, SEL))gOriginalLayoutSubviews)(self, _cmd);
-    @autoreleasepool {
-        @try {
-            GIUpdateOverlay(self);
-        } @catch (__unused NSException *e) {}
-    }
-}
-
-
-#pragma mark - Icon image cache hooks (data layer, SnowBoard-style)
-
-// SnowBoard's approach verbatim: hook the icon image caches. When SpringBoard
-// asks for an icon image, hand back the themed PNG; otherwise pass through.
-// SBHIconImageCache covers home screen icons; Spotlight and folders use the
-// same class family. Also hooks SBIconImageCache/SBFolderIconImageCache when
-// present for full coverage.
-
-static IMP gOrigImageForIcon = NULL;
-static IMP gOrigCachedImageForIcon = NULL;
-static NSInteger gCacheServeCount = 0;
-
-// SnowBoard hands the renderer a properly scaled square image; a raw
-// 1024pt@1x PNG blows up the icon layout. Resize to the system icon size
-// at 3x and stamp the scale so the cache gets a usable image.
-static UIImage *GIThemedImageForBundleID(NSString *bundleID) {
-    if (!bundleID.length) return nil;
-    UIImage *raw = GIIconPackImageForBundleID(bundleID);
-    if (!raw) return nil;
-
-    CGFloat iconSize = 60.0;   // SBIconImageView default visible size
-    CGFloat scale = 3.0;
-    if (raw.size.width <= iconSize && raw.size.height <= iconSize && raw.scale == scale) {
-        return raw;
-    }
-
-    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
-    format.scale = scale;
-    format.opaque = NO;
-    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(iconSize, iconSize) format:format];
-    UIImage *out = [renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *ctx) {
-        [raw drawInRect:CGRectMake(0, 0, iconSize, iconSize)];
-    }];
-    return out;
-}
-
-static UIImage *GICacheImageFromIcon(id icon) {
-    if (!icon || !gIconPackEnabled) return nil;
-    NSString *bundleID = nil;
-    for (NSString *key in @[@"applicationBundleID", @"bundleIdentifier"]) {
-        id value = nil;
-        @try { value = [icon valueForKey:key]; } @catch (__unused NSException *e) { value = nil; }
-        if ([value isKindOfClass:NSString.class] && [(NSString *)value length]) {
-            bundleID = (NSString *)value;
-            break;
-        }
-    }
-    if (!bundleID.length) return nil;
-    return GIThemedImageForBundleID(bundleID);
-}
-
-static IMP gOrigImageForBundleID = NULL;
-static IMP gOrigGenerateIcon = NULL;
-static BOOL gGenerateHookInstalled = NO;
-static BOOL gBundleIDHookInstalled = NO;
-
-static void __attribute__((unused)) GIInstallCacheHooks(void) {
-    SEL selImage = @selector(imageForIcon:);
-    SEL selCached = @selector(cachedImageForIcon:);
-
-    NSArray<NSString *> *cacheClasses = @[@"SBHIconImageCache", @"SBIconImageCache", @"SBFolderIconImageCache"];
-    for (NSString *className in cacheClasses) {
-        Class cls = objc_getClass(className.UTF8String);
-        if (!cls) { GILogMain(@"cache class %@ not found (skipped)", className); continue; }
-
-        Method m = class_getInstanceMethod(cls, selImage);
-        if (m) {
-            IMP themed = imp_implementationWithBlock(^UIImage *(id self, id icon) {
-                UIImage *themed = GICacheImageFromIcon(icon);
-                if (themed) {
-                    if (++gCacheServeCount <= 60) {
-                        GILogMain(@"cache serve #%ld themed image", (long)gCacheServeCount);
-                    }
-                    return themed;
-                }
-                UIImage *(*orig)(id, SEL, id) = (UIImage *(*)(id, SEL, id))gOrigImageForIcon;
-                return orig(self, selImage, icon);
-            });
-            method_setImplementation(m, themed);
-            GILogMain(@"cache hook active: %@ imageForIcon:", className);
-        }
-
-        Method m2 = class_getInstanceMethod(cls, selCached);
-        if (m2) {
-            IMP themed2 = imp_implementationWithBlock(^UIImage *(id self, id icon) {
-                UIImage *themed = GICacheImageFromIcon(icon);
-                if (themed) return themed;
-                UIImage *(*orig)(id, SEL, id) = (UIImage *(*)(id, SEL, id))gOrigCachedImageForIcon;
-                return orig(self, selCached, icon);
-            });
-            method_setImplementation(m2, themed2);
-            GILogMain(@"cache hook active: %@ cachedImageForIcon:", className);
-        }
-    }
-
-    // Bundle-id keyed fetch (SnowBoard covers these too) — the most direct
-    // mapping to our Icons/<bundleID>.png files. Classes may load after our
-    // constructor: retry until both are hooked.
-    if (gBundleIDHookInstalled) return;
-
-    SEL selBundle = @selector(imageForBundleIdentifier:withScale:);
-    NSArray<NSString *> *ownerClasses = @[@"SBApplicationIcon", @"SBApplication"];
-    static BOOL hooked[2] = {NO, NO};
-    for (NSUInteger i = 0; i < ownerClasses.count; i++) {
-        if (hooked[i]) continue;
-        Class cls = objc_getClass(ownerClasses[i].UTF8String);
-        if (!cls) continue;
-        Method m = class_getInstanceMethod(cls, selBundle);
-        if (!m) continue;
-        if (!gOrigImageForBundleID) gOrigImageForBundleID = method_getImplementation(m);
-        IMP replacement = imp_implementationWithBlock(^UIImage *(id self, NSString *bundleID, CGFloat scale) {
-            if (gIconPackEnabled) {
-                UIImage *themedImage = GIThemedImageForBundleID(bundleID);
-                if (themedImage) {
-                    if (++gCacheServeCount <= 60) {
-                        GILogMain(@"bundleid serve #%ld %@", (long)gCacheServeCount, bundleID);
-                    }
-                    return themedImage;
-                }
-            }
-            UIImage *(*orig)(id, SEL, NSString *, CGFloat) = (UIImage *(*)(id, SEL, NSString *, CGFloat))gOrigImageForBundleID;
-            SEL sel = @selector(imageForBundleIdentifier:withScale:);
-            return orig(self, sel, bundleID, scale);
-        });
-        method_setImplementation(m, replacement);
-        hooked[i] = YES;
-        gBundleIDHookInstalled = hooked[0] && hooked[1];
-        GILogMain(@"bundleid hook active: %@ imageForBundleIdentifier:withScale:", ownerClasses[i]);
-    }
-
-    // THE definitive hook on iOS 17.2.1 (per runtime probe): icon images are
-    // rendered by SBApplicationIcon generateIconImageWithInfo:. Wrap the orig
-    // call and substitute our themed image for the app's bundle id.
-    if (!gGenerateHookInstalled) {
-        // SnowBoard's registry: BOTH SBApplicationIcon and SBLeafIcon expose
-        // generateIconImageWithInfo:. Home-screen apps are SBLeafIcon.
-        SEL genSel = @selector(generateIconImageWithInfo:);
-        NSArray<NSString *> *genClasses = @[@"SBLeafIcon", @"SBApplicationIcon"];
-        static BOOL genHooked[2] = {NO, NO};
-        for (NSUInteger i = 0; i < genClasses.count; i++) {
-            if (genHooked[i]) continue;
-            Class iconCls = objc_getClass(genClasses[i].UTF8String);
-            Method gm = iconCls ? class_getInstanceMethod(iconCls, genSel) : NULL;
-            if (!gm) continue;
-            if (!gOrigGenerateIcon) gOrigGenerateIcon = method_getImplementation(gm);
-            IMP replacement = imp_implementationWithBlock(^UIImage *(id self, id info) {
-                UIImage *(*orig)(id, SEL, id) = (UIImage *(*)(id, SEL, id))gOrigGenerateIcon;
-                UIImage *systemImage = orig(self, genSel, info);
-                if (!gIconPackEnabled) return systemImage;
-
-                NSString *bundleID = nil;
-                for (NSString *key in @[@"applicationBundleID", @"bundleIdentifier"]) {
-                    id value = nil;
-                    @try { value = [self valueForKey:key]; } @catch (__unused NSException *e) { value = nil; }
-                    if ([value isKindOfClass:NSString.class] && [(NSString *)value length]) {
-                        bundleID = (NSString *)value;
-                        break;
-                    }
-                }
-                UIImage *themed = bundleID ? GIThemedImageForBundleID(bundleID) : nil;
-                if (themed) {
-                    static NSInteger logged = 0;
-                    if (logged++ < 30) {
-                        GILogMain(@"generate serve %@", bundleID);
-                    }
-                    return themed;
-                }
-                return systemImage;
-            });
-            method_setImplementation(gm, replacement);
-            genHooked[i] = YES;
-            GILogMain(@"generate hook active: %@ generateIconImageWithInfo:", genClasses[i]);
-        }
-        gGenerateHookInstalled = genHooked[0] && genHooked[1];
-    }
-
-    // One-shot probe: which candidate classes/selectors actually exist here?
-    static BOOL probed = NO;
-    if (!probed) {
-        probed = YES;
-        NSArray<NSString *> *candidates = @[@"SBApplicationIcon", @"SBApplication", @"SBIconModel",
-                                            @"SBRootIconModel", @"SBIconManager", @"SBIconImageCache",
-                                            @"SBHIconImageCache", @"SBIconView", @"SBIconImageView",
-                                            @"SBIconImageCrossfadeView", @"SnowBoardImageCropper"];
-        for (NSString *name in candidates) {
-            Class cls = objc_getClass(name.UTF8String);
-            GILogMain(@"probe %@ = %@", name, cls ? @"EXISTS" : @"missing");
-            if (!cls) continue;
-            NSArray<NSString *> *selectorNames = @[
-                @"imageForBundleIdentifier:withScale:",
-                @"imageForBundleIdentifier:withScale:withOverrides:",
-                @"iconImageForIcon:image:",
-                @"generateIconImage:",
-                @"generateIconImageWithInfo:",
-                @"imageForIcon:",
-                @"cachedImageForIcon:",
-            ];
-            for (NSString *selectorName in selectorNames) {
-                SEL sel = NSSelectorFromString(selectorName);
-                if (class_getInstanceMethod(cls, sel)) {
-                    GILogMain(@"probe %@ responds to %@", name, selectorName);
-                }
-            }
-        }
-    }
-}
-
-
-#pragma mark - SnowBoard icon providers (faithful copy of its fetch points)
-
-// SnowBoard's binary shows it fetches home-screen icons via these providers
-// (names taken verbatim from SnowBoardBase): imageForApplicationIconFormat:
-// activityCategory: and _applicationIconImageForBundleIdentifier:format:scale:.
-// Hook whichever exists, wrap orig, substitute the themed image.
-
-static IMP gOrigProvider1 = NULL;
-static BOOL gProvider1Installed = NO;
-
-
-static void __attribute__((unused)) GIInstallSnowBoardProviders(void) {
-    Class appIconCls = objc_getClass("SBApplicationIcon");
-
-    SEL sel1 = @selector(imageForApplicationIconFormat:activityCategory:);
-    Method m1 = appIconCls ? class_getInstanceMethod(appIconCls, sel1) : NULL;
-    if (m1 && !gProvider1Installed) {
-        if (!gOrigProvider1) gOrigProvider1 = method_getImplementation(m1);
-        UIImage *(*orig1)(id, SEL, id, id) = (UIImage *(*)(id, SEL, id, id))gOrigProvider1;
-        IMP themed1 = imp_implementationWithBlock(^UIImage *(id self, id format, id category) {
-            NSString *bundleID = nil;
-            for (NSString *key in @[@"applicationBundleID", @"bundleIdentifier"]) {
-                id value = nil;
-                @try { value = [self valueForKey:key]; } @catch (__unused NSException *e) { value = nil; }
-                if ([value isKindOfClass:NSString.class] && [(NSString *)value length]) {
-                    bundleID = (NSString *)value;
-                    break;
-                }
-            }
-            UIImage *themed = gIconPackEnabled && bundleID ? GIIconPackImageForBundleID(bundleID) : nil;
-            if (themed) {
-                GILogMain(@"provider1 serve %@", bundleID);
-                return themed;
-            }
-            return orig1(self, sel1, format, category);
-        });
-        method_setImplementation(m1, themed1);
-        gProvider1Installed = YES;
-        GILogMain(@"provider hook active: SBApplicationIcon imageForApplicationIconFormat:activityCategory:");
-    }
-
-    // Log existence once for diagnosis even when the hook cannot install.
-    static BOOL logged = NO;
-    if (!logged) {
-        logged = YES;
-        GILogMain(@"provider probe: SBApplicationIcon=%@ sel1=%@",
-                  appIconCls ? @"EXISTS" : @"missing",
-                  (appIconCls && class_getInstanceMethod(appIconCls, sel1)) ? @"YES" : @"no");
-    }
-}
-
-static void GIInstallHook(void) {
-    if (gInstalling || gHookInstalled) return;
-    gInstalling = YES;
-    Class cls = objc_getClass("SBIconImageView");
-    SEL selector = @selector(layoutSubviews);
-    Method inherited = cls ? class_getInstanceMethod(cls, selector) : NULL;
-    IMP replacement = (IMP)GIHookedLayoutSubviews;
-    if (!inherited) {
-        gInstalling = NO;
-        if (++gInstallAttempts < 20) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{ GIInstallHook(); });
-        }
-        return;
-    }
-    gOriginalLayoutSubviews = method_getImplementation(inherited);
-
-    unsigned int count = 0;
-    Method *methods = class_copyMethodList(cls, &count);
-    Method own = NULL;
-    for (unsigned int i = 0; i < count; i++) {
-        if (method_getName(methods[i]) == selector) {
-            own = methods[i];
-            break;
-        }
-    }
-    free(methods);
-
-    if (own) {
-        method_setImplementation(own, replacement);
-        gHookInstalled = YES;
-    } else {
-        gHookInstalled = class_addMethod(cls, selector, replacement, method_getTypeEncoding(inherited));
-    }
-    gInstalling = NO;
-}
-
-static void GIIconPackChanged(CFNotificationCenterRef center __unused, void *observer __unused,
-                              CFStringRef name __unused, const void *object __unused,
-                              CFDictionaryRef userInfo __unused) {
-    GIIconPackReload();
-}
-
-static void GIPreferencesChanged(CFNotificationCenterRef center __unused, void *observer __unused, CFStringRef name __unused,
-                                 const void *object __unused, CFDictionaryRef userInfo __unused) {
-    gLastPrefsRead = 0.0;  // force a fresh read on the next icon layout
-
-    // Redraw every tracked icon right away so slider changes apply without respring.
-    dispatch_async(dispatch_get_main_queue(), ^{
-        GIReadPreferences();
-        if (!gTileCache) gTileCache = [NSMutableDictionary dictionary];
-        [gTileCache removeAllObjects];
-        for (UIView *view in gTrackedViews) {
-            if (!view) continue;
-            objc_setAssociatedObject(view, kGlassSignatureKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            @try { GIUpdateOverlay(view); } @catch (__unused NSException *e) {}
-        }
-        GIScanAllIcons();
-    });
-}
-
+extern void GIIconEngineInstall(void);
 
 __attribute__((constructor)) static void GIInitialize(void) {
-    if (![NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.springboard"]) return;
-    GIIconPackEnsureDirectory();
-    NSUInteger packCount = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:kIconPackDir
-                                    error:NULL].count;
-    CFPropertyListRef enabledRef = CFPreferencesCopyAppValue(CFSTR("IconPackEnabled"), kGlassDomain);
-    BOOL userEnabled = enabledRef ? (CFGetTypeID(enabledRef) == CFBooleanGetTypeID()
-                                      ? CFBooleanGetValue((CFBooleanRef)enabledRef) : YES) : YES;
-    if (enabledRef) CFRelease(enabledRef);
-    gIconPackEnabled = userEnabled && packCount > 0;
-    GILogMain(@"init: iconpack dir contents = %lu (userEnabled=%d, enabled=%d)",
-              (unsigned long)packCount, userEnabled, gIconPackEnabled);
-    // Icon replacement engine (ported from SnowBoardRecovered 1.0): hooks
-    // SBHIconImageCache + icon layout classes and actively refreshes visible
-    // icons. Glass overlay and badges remain untouched.
-    if (gIconPackEnabled) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{ GIIconEngineInstall(); });
-    }
+    gTrackedViews = [NSHashTable hashTableWithOptions:NSHashTableWeakMemory];
     GIReadPreferences();
-    GIReadDisabledState();
-    GIInstallHook();
-    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,
-                                   (CFNotificationCallback)GIPreferencesChanged,
-                                   CFSTR("com.soren.glassicons.changed"), NULL,
-                                   CFNotificationSuspensionBehaviorDeliverImmediately);
-    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,
-                                   (CFNotificationCallback)GIIconPackChanged,
-                                   CFSTR("com.soren.glassicons.iconpack"), NULL,
-                                   CFNotificationSuspensionBehaviorDeliverImmediately);
 
-    // Home screen icons settle without further layout passes: scan a few times.
-    for (NSNumber *delay in @[@2.0, @4.0, @7.0, @12.0]) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{ GIScanAllIcons(); });
-    }
+    // Icon replacement engine (data-layer hooks)
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        GIIconEngineInstall();
+    });
+
+    // Glass overlay hook
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        GIHookInstall();
+        GIScanAllIcons();
+    });
+
+    // Periodic scans for new icons
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ GIScanAllIcons(); });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ GIScanAllIcons(); });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(12.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ GIScanAllIcons(); });
+
+    // Preferences change notification
+    CFNotificationCenterRef darwin = CFNotificationCenterGetDarwinNotifyCenter();
+    CFNotificationCenterAddObserver(darwin, NULL,
+                                    (CFNotificationCallback)GIPreferencesChanged,
+                                    NULL, @"com.soren.glassicons.changed",
+                                    CFNotificationSuspensionBehaviorDeliverImmediately);
+    CFNotificationCenterAddObserver(darwin, NULL,
+                                    (CFNotificationCallback)GIPreferencesChanged,
+                                    NULL, @"com.soren.glassicons.iconpack",
+                                    CFNotificationSuspensionBehaviorDeliverImmediately);
 }

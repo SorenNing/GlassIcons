@@ -20,7 +20,7 @@
 			<key>defaults</key>
 			<string>com.soren.glassicons</string>
 			<key>key</key>
-			<string>Enabled</string>
+			<string>GlassIconEnabled</string>
 			<key>label</key>
 			<string>启用</string>
 		</dict>
@@ -46,7 +46,7 @@
 			<key>isContinuous</key>
 			<true/>
 			<key>key</key>
-			<string>Intensity</string>
+			<string>GlassIconIntensity</string>
 			<key>max</key>
 			<real>5.0</real>
 			<key>min</key>
@@ -76,7 +76,7 @@
 			<key>isContinuous</key>
 			<true/>
 			<key>key</key>
-			<string>Sheen</string>
+			<string>GlassIconSheen</string>
 			<key>max</key>
 			<real>5.0</real>
 			<key>min</key>
@@ -106,7 +106,7 @@
 			<key>isContinuous</key>
 			<true/>
 			<key>key</key>
-			<string>Rim</string>
+			<string>GlassIconRim</string>
 			<key>max</key>
 			<real>5.0</real>
 			<key>min</key>
